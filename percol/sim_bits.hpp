@@ -45,8 +45,6 @@ inline auto delete_spins(std::mt19937& rng, SuperLat& sc, double p,
         s.reset();
         if (rand01(rng) < p) {
             s.deleted = true;
-            seed_tetras.insert(s.owning_tetras[0]);
-            seed_tetras.insert(s.owning_tetras[1]);
         } else {
             s.deleted = false;
         }
@@ -55,16 +53,22 @@ inline auto delete_spins(std::mt19937& rng, SuperLat& sc, double p,
     // pass 2: build the tetra connectivity graph 
     for (const auto& [I, cell] : sc.enumerate_cells() ) {
         for (auto [tetra_sl, t] : cell.enumerate_objects<Tetra>()){
-            t->is_complete=true;
             t->neighbours.clear();
             for (auto& s : t->member_spins){
-                if (s->deleted) {
-                    t->is_complete = false;
-                } else {
+                if (!s->deleted) {
                     Tetra* t2=s->owning_tetras[(tetra_sl+1)%2];
                     t->neighbours.push_back({t2, s});
                 }
             }
+
+            // mark 1-spin and 3-spin as seed tetras
+            if (t->neighbours.size() == 3 || t->neighbours.size() == 1){
+                seed_tetras.insert(t);
+                t->is_complete=false;
+            } else {
+                t->is_complete=true;
+            }
+
         }
     }
     
@@ -337,7 +341,5 @@ inline void identify_quantum_clusters(
                     qc.boundary_spins.push_back(nb);
             }
         }
-
     }
-
 }

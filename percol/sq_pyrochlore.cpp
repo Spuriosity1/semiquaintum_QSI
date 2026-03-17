@@ -18,8 +18,6 @@ using namespace std;
 //
 // 1. Removes spins from the lattice at random.
 // 2. Identifies 'quantum clusters' of spins
-//
-
 
 
 
