@@ -20,7 +20,9 @@ inline void output_cluster_hist(std::ostream& os, const std::map<size_t, size_t>
 
 }
 
-inline void output_cluster_dist(std::ostream& os, std::vector<QCluster>& clusters, size_t denom){
+template<typename ClusterT>
+requires std::derived_from<ClusterT, QClusterBase>
+inline void output_cluster_dist(std::ostream& os, std::vector<ClusterT>& clusters, size_t denom){
     std::map<size_t, size_t> hist;
 
     for (auto Q : clusters){
@@ -37,7 +39,7 @@ inline void output_cluster_dist(std::ostream& os, std::vector<QCluster>& cluster
 // N.B. I thiught of optimising this slightly by modifying the deleted spins' 
 // neighbours directly, but you pay a linear cost anyway 
 inline auto delete_spins(std::mt19937& rng, SuperLat& sc, double p,
-    std::unordered_set<Tetra*>& seed_tetras){
+    std::unordered_set<Tetra*>& seed_tetras, std::vector<Plaq*>* intact_plaqs=nullptr){
     seed_tetras.clear();
     static auto rand01 = std::uniform_real_distribution();
 
@@ -50,7 +52,7 @@ inline auto delete_spins(std::mt19937& rng, SuperLat& sc, double p,
         }
     }
 
-    // pass 2: build the tetra connectivity graph 
+    // pass 2: build the tetra connectivity graph and incomplete hexas
     for (const auto& [I, cell] : sc.enumerate_cells() ) {
         for (auto [tetra_sl, t] : cell.enumerate_objects<Tetra>()){
             t->neighbours.clear();
@@ -64,13 +66,28 @@ inline auto delete_spins(std::mt19937& rng, SuperLat& sc, double p,
             // mark 1-spin and 3-spin as seed tetras
             if (t->neighbours.size() == 3 || t->neighbours.size() == 1){
                 seed_tetras.insert(t);
-                t->is_complete=false;
+                t->can_fluctuate=true;
             } else {
-                t->is_complete=true;
+                t->can_fluctuate=false;
             }
 
         }
+
+        if (intact_plaqs != nullptr){
+            intact_plaqs->resize(0);
+            for (auto [plaq_sl, p] : cell.enumerate_objects<Plaq>()){
+                p->is_complete=true;
+                for (auto& s: p->member_spins){
+                    if (s->deleted || s->is_quantum()) {
+                        p->is_complete = false;
+                        break;
+                    }
+                }
+                if (p->is_complete) intact_plaqs->push_back(p);
+            }
+        }
     }
+
     
 
 }
@@ -87,11 +104,13 @@ inline auto initialise_lattice(int L)
 
     for (int fcc_i=0; fcc_i<4; fcc_i++){
         const auto& r0 = fcc[fcc_i];
-        for (int mu=0; mu<4; mu++){
-            cell.add(Spin(r0 + pyro[mu]));
-        }
         cell.add(Tetra(r0)); // the up tetra
         cell.add(Tetra(r0-ipos_t{2,2,2})); // the down tetra
+        // the plaqs
+        for (int mu=0; mu<4; mu++){
+            cell.add(Spin(r0 + pyro[mu]));
+            cell.add(Plaq(r0 + ipos_t{2,2,2} - pyro[mu]));
+        }
     }
 
     std::vector<std::pair<int, int>> munu_map;
@@ -103,7 +122,7 @@ inline auto initialise_lattice(int L)
 
     auto Z = imat33_t::from_cols({L,0,0}, {0, L, 0}, {0, 0, L});
 
-    Supercell sc = build_supercell<Spin,Tetra>(cell, Z);
+    Supercell sc = build_supercell<Spin,Tetra,Plaq>(cell, Z);
 
 
     for (const auto& [I, cell] : sc.enumerate_cells() ) {
@@ -132,24 +151,23 @@ inline auto initialise_lattice(int L)
 
             // note that "neighbours" is set later, once the deletion pattern is known
         }
+
+        // thin ring structs for efficient classical MC
+        for (auto [plaq_sl, plaq] : cell.enumerate_objects<Plaq>()){
+            for (int i=0; i<6; i++ ){
+                const auto& dp = plaq_boundaries[plaq_sl%4][i];
+                ipos_t R = plaq->ipos + dp;
+                Spin* s0 = sc.get_object_at<Spin>(R);
+                assert_position(s0, R);
+                plaq->member_spins[i] = s0;
+            }
+        }
     
     }
 
     return sc;
 }
 
-
-inline void initialise_cluster(QCluster& qc){
-    qc.boundary_config = static_cast<QCluster::BoundaryConfig>(0);
-
-    for (size_t i=0; i< qc.boundary_spins.size(); i++){
-        if (qc.boundary_spins[i]->ising_val == 1){
-            qc.boundary_config |= (1ull << i);
-        }
-    }
-    qc.build_matrix_rep();
-    qc.diagonalise(qc.boundary_config);
-}
 
 
 inline Spin* find_q_root(Spin* s){
@@ -279,7 +297,7 @@ inline void le4nn(
 using QMarkFn = void(*)(const std::unordered_set<Tetra*>&, std::vector<Spin*>&);
 
 /*
- * 'greedy' search for spins which 'should be' dimers. 
+ * 'greedy' search for spins satisfying certain conditions on being near dimers.
  * These are spins present in the motif DEFECT-spin1-spin2-DEFECT.
  * Needs to be efficient only in the dilute case; we simply consider the full n^2 
  *
@@ -338,8 +356,79 @@ inline void identify_quantum_clusters(
                 if (!nb->deleted 
                         && nb->owning_cluster == nullptr
                         && seen.insert(nb).second) 
-                    qc.boundary_spins.push_back(nb);
+                    qc.classical_boundary_spins.push_back(nb);
             }
         }
     }
 }
+
+
+
+
+// More specialised than the above method. We consider neighbouring spins to be
+// part of the same cluster only if two of the diamond walks overlap 
+// (i.e. clusters end at defect tetras).
+inline void identify_1o_clusters(
+        const std::unordered_set<Tetra*>& seed_tetras,
+        std::vector<QClusterMF>& clust){
+
+    // Simpler algorithm. Walk all unique bonds, and check whether
+    // the terminating tetras are quantum
+
+    std::vector<Spin*> quantum_spins;
+    QuantumRule::eq2nn(seed_tetras, quantum_spins); // colour spins by distance
+
+    // union find
+    for (auto qs : quantum_spins){
+        for (auto ns : qs->neighbours){
+            if (ns->q_cluster_root != nullptr &&
+                    ns < qs &&
+                    ends_can_fluctuate(ns, qs) ) {
+                // avoids double counting
+                // mark as quantum
+                Spin* root_qs = find_q_root(qs);
+                Spin* root_ns = find_q_root(ns);
+                if (root_qs != root_ns){
+                    root_ns->q_cluster_root = root_qs;
+                }
+            }   
+        }
+    }
+
+    // Group spins by their root into QClusterMFs
+    std::unordered_map<Spin*, QClusterMF> root_to_cluster;
+    for (auto qs : quantum_spins){
+        Spin* root = find_q_root(qs);
+        root_to_cluster[root].spins.push_back(qs);
+    }
+
+    clust.clear();
+    clust.reserve(root_to_cluster.size());
+    for (auto& [root, cluster] : root_to_cluster){
+        cluster.spins.shrink_to_fit();
+        clust.push_back(std::move(cluster));
+    }
+
+    // link up the spins' "owning_cluster" pointers
+    for (auto& qc : clust){
+        for (auto& s : qc.spins){
+            s->owning_cluster = &qc;
+        }
+    }
+
+    // detect and store the boundary spins
+    for (auto& qc : clust){
+        std::unordered_set<Spin*> seen;
+        for (auto& s : qc.spins){
+            for (const auto nb : s->neighbours){
+                if (nb->deleted) continue;
+                if (nb->owning_cluster == nullptr && seen.insert(nb).second)
+                    qc.classical_boundary_spins.push_back(nb);
+                else if (nb->owning_cluster != nullptr
+                        && nb->owning_cluster != &qc && seen.insert(nb).second)
+                    qc.quantum_boundary_spins.push_back(nb);
+            }
+        }
+    }
+}
+

@@ -29,7 +29,7 @@ std::string make_filestem(
     float p,
     size_t seed,
     size_t nsweep,
-    bool use_nn4,
+    std::string clust_type,
     const std::string& prefix = "run"
     )
 {
@@ -40,7 +40,7 @@ std::string make_filestem(
         << "_p" << std::fixed << std::setprecision(3) << p
         << "_s" << seed
         << "_w" << nsweep
-        << (use_nn4 ? "_nn4" : "_nn2");
+        << "_" << clust_type;
 
     return oss.str();
 }
@@ -75,10 +75,9 @@ int main (int argc, char *argv[]) {
         .scan<'i', size_t>();
 
 
-    ap.add_argument("--include_second_order", "-a")
+    ap.add_argument("--cluster_def", "-a")
         .help("Includes also second order processes")
-        .default_value(false)
-        .implicit_value(true);
+        .choices("nn2", "nn24", "nn2_mf");
 
     ap.add_argument("--save_spins")
         .implicit_value(true)
@@ -102,7 +101,7 @@ int main (int argc, char *argv[]) {
 
     std::map<size_t, size_t> cluster_hist;
 
-    bool use_nn4 = ap.get<bool>("--include_second_order");
+    auto cdef = ap.get<std::string>("--cluster_def");
 
 
     for (size_t n=0; n<nsweep; n++){
@@ -110,24 +109,33 @@ int main (int argc, char *argv[]) {
         // (Bernoulli sample)
         delete_spins(rng, sc, p, seed_tetras);
         // Identify the quantum-cluster distribution
-        std::vector<QCluster> clusters;
-        // populates state.clusters
-        if (use_nn4){
-            identify_quantum_clusters<QuantumRule::eq24nn>(seed_tetras, clusters);
+        
+        if (cdef == "nn2_mf"){
+            std::vector<QClusterMF> clusters;
+            // populates state.clusters
+            identify_1o_clusters(seed_tetras, clusters);
+
+            for (const auto& Q : clusters) cluster_hist[ Q.spins.size() ]++;
+            
         } else {
-            identify_quantum_clusters<QuantumRule::eq2nn>(seed_tetras, clusters);
+            //
+            std::vector<QCluster> clusters;
+            // populates state.clusters
+            if (cdef == "nn2"){
+                identify_quantum_clusters<QuantumRule::eq24nn>(seed_tetras, clusters);
+            } else if (cdef == "nn24") {
+                identify_quantum_clusters<QuantumRule::eq2nn>(seed_tetras, clusters);
+            }
+
+            for (const auto& Q : clusters) cluster_hist[ Q.spins.size() ]++;
         }
 
-        for (const auto& Q : clusters){
-            size_t size = Q.spins.size();
-            cluster_hist[size]++;
-        }
     }
 
 
     std::filesystem::path out_dir = ap.get<std::string>("--output_dir");
 
-    std::string file_stem = make_filestem(L, p, seed, nsweep, use_nn4, "hist");
+    std::string file_stem = make_filestem(L, p, seed, nsweep, cdef, "hist");
     auto hist_fname = out_dir/(file_stem+".csv");
     std::ofstream ofs(hist_fname);
     size_t denom = L*L*L*16*nsweep;
@@ -145,7 +153,7 @@ int main (int argc, char *argv[]) {
 
     if (ap.get<bool>("--save_spins")){
 
-        std::string file_stem = make_filestem(L, p, seed, nsweep, use_nn4, "geometry");
+        std::string file_stem = make_filestem(L, p, seed, nsweep, cdef, "geometry");
         auto spins_fname = out_dir/(file_stem+".spins.csv");
         auto bonds_fname = out_dir/(file_stem+".bonds.csv");
 

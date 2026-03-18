@@ -24,7 +24,14 @@ sq_pyrochlore_bin = executable('sq_pyrochlore', 'sq_pyrochlore.cpp',
  )
 
 
-sq_pyrochlore_bin = executable('sq_pyrochlore_dump', 'sq_pyrochlore_dump.cpp',
+sq_pyrochlore_exact_bin = executable('sq_pyrochlore_exact', 'sq_pyrochlore_exact.cpp',
+  include_directories:percol_inc,
+  link_with: [percol_lib],
+  dependencies: [main_deps, eigen_dep, hdf5_dep]
+ )
+
+
+dump_bin = executable('sq_pyrochlore_dump', 'sq_pyrochlore_dump.cpp',
   include_directories:percol_inc,
   link_with: [percol_lib],
   dependencies: [main_deps, eigen_dep, hdf5_dep]

@@ -123,8 +123,6 @@ int main (int argc, char *argv[]) {
     size_t nsweep = ap.get<size_t>("--nsweep");
     size_t nburn = ap.get<size_t>("--nburn");
 
-    bool use_nn4 = ap.get<bool>("--include_second_order");
-
     MCSettings params;
 
     SuperLat sc = initialise_lattice(L);
@@ -133,19 +131,16 @@ int main (int argc, char *argv[]) {
     // (Bernoulli sample)
     std::mt19937 rng(seed);
     std::unordered_set<Tetra*> seed_tetras;
-    delete_spins(rng, sc, p, seed_tetras);
-
     // Identify the quantum-cluster distribution
-    MCState state;
-    if (use_nn4){
-        identify_quantum_clusters<QuantumRule::eq24nn>(seed_tetras, state.clusters);
-    } else {
-        identify_quantum_clusters<QuantumRule::eq2nn>(seed_tetras, state.clusters);
-    }
+    MCStateMF state;
+
+    delete_spins(rng, sc, p, seed_tetras, &state.intact_plaqs);
+
+    identify_1o_clusters(seed_tetras, state.clusters);
 
     // initialise the clusters
     for (auto& qc : state.clusters){
-        initialise_cluster(qc);
+        qc.initialise();
     }
 
     // Partitions spins into boundary, cluster and neighbour
@@ -159,6 +154,17 @@ int main (int argc, char *argv[]) {
         state.boundary_spins.size() << " Boundary spins\n"<<
         state.clusters.size() << " Quantum clusters\n";
 
+    // load in the parameters
+
+    double Thot = ap.get<double>("--Thot");
+    double Tcold = ap.get<double>("--Tcold");
+    size_t n_step = ap.get<size_t>("--nstep");
+
+    params.beta = 1./Thot;
+    ModelParams::get().Jzz = ap.get<double>("--Jzz");
+    ModelParams::get().Jxx = ap.get<double>("--Jxx");
+    ModelParams::get().Jyy = ap.get<double>("--Jyy");
+
     // Burn-In
     std::cout<<"Burning in... \n";
     for (size_t n=1; n<=nburn; n++){
@@ -169,15 +175,6 @@ int main (int argc, char *argv[]) {
 
     // Measure
     energy_manager em;
-
-    double Thot = ap.get<double>("--Thot");
-    double Tcold = ap.get<double>("--Tcold");
-    size_t n_step = ap.get<size_t>("--nstep");
-
-    params.beta = 1./Thot;
-    ModelParams::get().Jzz = ap.get<double>("--Jzz");
-    ModelParams::get().Jxx = ap.get<double>("--Jxx");
-    ModelParams::get().Jyy = ap.get<double>("--Jyy");
 
     double factor = exp( log(Tcold/Thot) / n_step );
 
@@ -192,6 +189,7 @@ int main (int argc, char *argv[]) {
             em.sample(state.energy());
         }
 
+        params.accepted_plaq /= state.intact_plaqs.size();
         params.accepted_classical /= state.classical_spins.size();
         params.accepted_quantum /= state.clusters.size();
         params.accepted_boundary /= state.boundary_spins.size();

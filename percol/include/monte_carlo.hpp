@@ -22,9 +22,10 @@ struct MCSettings {
     std::mt19937 rng;
     std::uniform_real_distribution<double> uniform{0.0, 1.0};
 
-    size_t accepted_classical=0;
-    size_t accepted_boundary=0;
-    size_t accepted_quantum=0;
+    double accepted_classical=0;
+    double accepted_boundary=0;
+    double accepted_quantum=0;
+    double accepted_plaq=0;
 
     size_t sweeps_attempted=0;
 
@@ -37,7 +38,8 @@ struct MCSettings {
 
     std::string acceptance(){
         std::ostringstream os;
-        os << "Acc C="<< 100.0 * accepted_classical/sweeps_attempted<<"%\t"
+        os << "Acc R="<<100.0 * accepted_plaq/sweeps_attempted<<"%\t"
+         << "Acc C="<< 100.0 * accepted_classical/sweeps_attempted<<"%\t"
          << "Acc B="<< 100.0 * accepted_boundary/sweeps_attempted<<"%\t"
          << "Acc Q="<< 100.0 * accepted_quantum/sweeps_attempted<<"%";
         return os.str();
@@ -61,3 +63,15 @@ struct MCState {
 
 
 
+struct MCStateMF {
+    std::vector<Plaq*>    intact_plaqs;
+    std::vector<Spin*>    classical_spins;  // type 4
+    std::vector<Spin*>    boundary_spins;  // type 3
+    std::vector<QClusterMF> clusters;
+
+    void partition_spins(std::vector<Spin>& spins);
+
+    void sweep(MCSettings& mc_);
+
+    double energy();
+};
