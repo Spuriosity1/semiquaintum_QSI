@@ -110,18 +110,16 @@ int main (int argc, char *argv[]) {
         // (Bernoulli sample)
         delete_spins(rng, sc, p, seed_tetras);
         // Identify the quantum-cluster distribution
-        std::vector<QCluster> clusters;
-        // populates state.clusters
+        std::vector<QCluster>   exact_clusters;
+        std::vector<QClusterMF> mf_clusters;
         if (use_nn4){
-            identify_quantum_clusters<QuantumRule::eq24nn>(seed_tetras, clusters);
+            identify_quantum_clusters<QuantumRule::eq24nn>(seed_tetras, exact_clusters, mf_clusters);
         } else {
-            identify_quantum_clusters<QuantumRule::eq2nn>(seed_tetras, clusters);
+            identify_quantum_clusters<QuantumRule::eq2nn>(seed_tetras, exact_clusters, mf_clusters);
         }
 
-        for (const auto& Q : clusters){
-            size_t size = Q.spins.size();
-            cluster_hist[size]++;
-        }
+        for (const auto& Q : exact_clusters) cluster_hist[Q.spins.size()]++;
+        for (const auto& Q : mf_clusters)    cluster_hist[Q.spins.size()]++;
     }
 
 

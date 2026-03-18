@@ -48,9 +48,13 @@ struct MCSettings {
 
 
 struct MCState {
-    std::vector<Spin*>    classical_spins;  // type 4
-    std::vector<Spin*>    boundary_spins;  // type 3
-    std::vector<QCluster> clusters;
+    std::vector<Spin*>     classical_spins;  // type 4
+    std::vector<Spin*>     boundary_spins;   // type 3
+    std::vector<QCluster>  exact_clusters;   // exact: size ≤ mf_threshold
+    std::vector<QClusterMF> mf_clusters;     // mean-field: size > mf_threshold
+
+    // Total number of quantum clusters (for acceptance-rate normalisation).
+    size_t n_clusters() const { return exact_clusters.size() + mf_clusters.size(); }
 
     void partition_spins(std::vector<Spin>& spins);
 

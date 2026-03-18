@@ -138,26 +138,37 @@ int main (int argc, char *argv[]) {
     // Identify the quantum-cluster distribution
     MCState state;
     if (use_nn4){
-        identify_quantum_clusters<QuantumRule::eq24nn>(seed_tetras, state.clusters);
+        identify_quantum_clusters<QuantumRule::eq24nn>(seed_tetras, state.exact_clusters, state.mf_clusters);
     } else {
-        identify_quantum_clusters<QuantumRule::eq2nn>(seed_tetras, state.clusters);
+        identify_quantum_clusters<QuantumRule::eq2nn>(seed_tetras, state.exact_clusters, state.mf_clusters);
     }
 
     // initialise the clusters
-    for (auto& qc : state.clusters){
-        initialise_cluster(qc);
-    }
+    for (auto& qc : state.exact_clusters) qc.initialise();
+    for (auto& qc : state.mf_clusters)    qc.initialise();
 
     // Partitions spins into boundary, cluster and neighbour
     state.partition_spins(sc.get_objects<Spin>());
 
     // output the cluster distribution and other stats
-    output_cluster_dist(std::cout, state.clusters, 1);
+    output_cluster_dist(std::cout, state.exact_clusters, state.mf_clusters, 1);
 
     std::cout<<"\n\n==========================\n"<<
         state.classical_spins.size() << " Full classical spins\n" <<
         state.boundary_spins.size() << " Boundary spins\n"<<
-        state.clusters.size() << " Quantum clusters\n";
+        state.n_clusters() << " Quantum clusters (" <<
+        state.exact_clusters.size() << " exact, " <<
+        state.mf_clusters.size() << " MF)\n";
+
+    // Read in params
+    double T_hot = ap.get<double>("--Thot");
+    double T_cold = ap.get<double>("--Tcold");
+    size_t n_step = ap.get<size_t>("--nstep");
+
+    params.beta = 1./T_hot;
+    ModelParams::get().Jzz = ap.get<double>("--Jzz");
+    ModelParams::get().Jxx = ap.get<double>("--Jxx");
+    ModelParams::get().Jyy = ap.get<double>("--Jyy");
 
     // Burn-In
     std::cout<<"Burning in... \n";
@@ -170,16 +181,7 @@ int main (int argc, char *argv[]) {
     // Measure
     energy_manager em;
 
-    double Thot = ap.get<double>("--Thot");
-    double Tcold = ap.get<double>("--Tcold");
-    size_t n_step = ap.get<size_t>("--nstep");
-
-    params.beta = 1./Thot;
-    ModelParams::get().Jzz = ap.get<double>("--Jzz");
-    ModelParams::get().Jxx = ap.get<double>("--Jxx");
-    ModelParams::get().Jyy = ap.get<double>("--Jyy");
-
-    double factor = exp( log(Tcold/Thot) / n_step );
+    double factor = exp( log(T_cold/T_hot) / n_step );
 
     for (size_t i=0; i<n_step; i++){
         std::cout<<"T = "<<1./params.beta<<"\t";
@@ -193,7 +195,7 @@ int main (int argc, char *argv[]) {
         }
 
         params.accepted_classical /= state.classical_spins.size();
-        params.accepted_quantum /= state.clusters.size();
+        params.accepted_quantum /= state.n_clusters();
         params.accepted_boundary /= state.boundary_spins.size();
 
         std::cout<<"E = "<<em.curr_E()<<"\t"<<params.acceptance()<<std::endl;

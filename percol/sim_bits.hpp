@@ -20,17 +20,14 @@ inline void output_cluster_hist(std::ostream& os, const std::map<size_t, size_t>
 
 }
 
-inline void output_cluster_dist(std::ostream& os, std::vector<QCluster>& clusters, size_t denom){
+inline void output_cluster_dist(std::ostream& os,
+                                const std::vector<QCluster>& exact_clusters,
+                                const std::vector<QClusterMF>& mf_clusters,
+                                size_t denom){
     std::map<size_t, size_t> hist;
-
-    for (auto Q : clusters){
-        int size = Q.spins.size();
-        hist[size]++;
-    }
-
+    for (const auto& Q : exact_clusters) hist[Q.spins.size()]++;
+    for (const auto& Q : mf_clusters)    hist[Q.spins.size()]++;
     output_cluster_hist(os, hist, denom);
-
-
 }
 
 
@@ -64,9 +61,9 @@ inline auto delete_spins(std::mt19937& rng, SuperLat& sc, double p,
             // mark 1-spin and 3-spin as seed tetras
             if (t->neighbours.size() == 3 || t->neighbours.size() == 1){
                 seed_tetras.insert(t);
-                t->is_complete=false;
+                t->can_fluctuate_free=false;
             } else {
-                t->is_complete=true;
+                t->can_fluctuate_free=true;
             }
 
         }
@@ -139,17 +136,6 @@ inline auto initialise_lattice(int L)
 }
 
 
-inline void initialise_cluster(QCluster& qc){
-    qc.boundary_config = static_cast<QCluster::BoundaryConfig>(0);
-
-    for (size_t i=0; i< qc.boundary_spins.size(); i++){
-        if (qc.boundary_spins[i]->ising_val == 1){
-            qc.boundary_config |= (1ull << i);
-        }
-    }
-    qc.build_matrix_rep();
-    qc.diagonalise(qc.boundary_config);
-}
 
 
 inline Spin* find_q_root(Spin* s){
@@ -284,62 +270,99 @@ using QMarkFn = void(*)(const std::unordered_set<Tetra*>&, std::vector<Spin*>&);
  * Needs to be efficient only in the dilute case; we simply consider the full n^2 
  *
  */
+// Identify quantum clusters and partition them into exact (QCluster) and
+// mean-field (QClusterMF) types based on cluster size.
+// Clusters with size ≤ mf_threshold are solved exactly; larger ones use MF.
 template <QMarkFn MarkFn>
 inline void identify_quantum_clusters(
-        const std::unordered_set<Tetra*>& seed_tetras, 
-        std::vector<QCluster>& clust
-        ){
-
+        const std::unordered_set<Tetra*>& seed_tetras,
+        std::vector<QCluster>& exact_clust,
+        std::vector<QClusterMF>& mf_clust,
+        int mf_threshold = 8)
+{
     std::vector<Spin*> quantum_spins;
 
     MarkFn(seed_tetras, quantum_spins);
 
-    // union find
+    // Union-find: merge all adjacent quantum-spin pairs (original behaviour)
     for (auto qs : quantum_spins){
         for (auto ns : qs->neighbours){
-            if (ns->q_cluster_root != nullptr){ // ns is a quantum spin
-                // Union: point ns's root to qs's root
-                Spin* root_qs = find_q_root(qs);
-                Spin* root_ns = find_q_root(ns);
-                if (root_qs != root_ns){
-                    root_ns->q_cluster_root = root_qs;
-                }
-            }
+            if (ns->q_cluster_root == nullptr) continue;
+            Spin* root_qs = find_q_root(qs);
+            Spin* root_ns = find_q_root(ns);
+            if (root_qs != root_ns)
+                root_ns->q_cluster_root = root_qs;
         }
     }
 
-    
-    // Group spins by their root into QClusters
-    std::unordered_map<Spin*, QCluster> root_to_cluster;
+    // Group spins by their root
+    std::unordered_map<Spin*, std::vector<Spin*>> root_to_spins;
     for (auto qs : quantum_spins){
         Spin* root = find_q_root(qs);
-        root_to_cluster[root].spins.push_back(qs);
+        root_to_spins[root].push_back(qs);
     }
 
-    clust.clear();
-    clust.reserve(root_to_cluster.size());
-    for (auto& [root, cluster] : root_to_cluster){
-        cluster.spins.shrink_to_fit();
-        clust.push_back(std::move(cluster));
-    }
+    exact_clust.clear();
+    mf_clust.clear();
 
-    // link up the spins' "owning_cluster" pointers
-    for (auto& qc : clust){
-        for (auto& s : qc.spins){
-            s->owning_cluster = &qc;
-        }
-    }
+    // Reserve to prevent reallocation after owning_cluster pointers are set
+    exact_clust.reserve(root_to_spins.size());
+    mf_clust.reserve(root_to_spins.size() * 2);  // sub-cluster split may produce more
 
-    // detect and store the boundary spins
-    for (auto& qc : clust){
-        std::unordered_set<Spin*> seen;
-        for (auto& s : qc.spins){
-            for (const auto nb : s->neighbours){
-                if (!nb->deleted 
-                        && nb->owning_cluster == nullptr
-                        && seen.insert(nb).second) 
-                    qc.boundary_spins.push_back(nb);
+    // Create clusters of the appropriate type
+    for (auto& [root, spin_group] : root_to_spins){
+        if ((int)spin_group.size() <= mf_threshold){
+            // Small component: one exact cluster
+            exact_clust.emplace_back();
+            exact_clust.back().spins = std::move(spin_group);
+        } else {
+            // Large component: split into sub-clusters at can_fluctuate_free boundaries.
+            // Only bonds where both shared-end tetras can_fluctuate_free carry J_±;
+            // the remaining (ZZ-only) inter-sub-cluster couplings are handled at
+            // mean-field level via QClusterMF boundary fields.
+
+            std::unordered_set<Spin*> component(spin_group.begin(), spin_group.end());
+
+            // Reset q_cluster_root for a fresh sub-cluster union-find
+            for (auto qs : spin_group) qs->q_cluster_root = qs;
+
+            // Merge only across can_fluctuate_free bonds
+            for (auto qs : spin_group) {
+                for (auto ns : qs->neighbours) {
+                    if (!component.count(ns)) continue;
+                    int end_sl = (qs->owning_tetras[0] != ns->owning_tetras[0]) ? 0 : 1;
+                    if (qs->owning_tetras[end_sl]->can_fluctuate_free &&
+                        ns->owning_tetras[end_sl]->can_fluctuate_free) {
+                        Spin* rq = find_q_root(qs);
+                        Spin* rn = find_q_root(ns);
+                        if (rq != rn) rn->q_cluster_root = rq;
+                    }
+                }
+            }
+
+            // Group by sub-cluster root; one QClusterMF per sub-cluster
+            std::unordered_map<Spin*, std::vector<Spin*>> sub_roots;
+            for (auto qs : spin_group)
+                sub_roots[find_q_root(qs)].push_back(qs);
+
+            for (auto& [sr, sub_spins] : sub_roots) {
+                mf_clust.emplace_back();
+                mf_clust.back().spins = std::move(sub_spins);
             }
         }
     }
+
+    // Shrink-to-fit the cluster vectors now that sizes are final
+    exact_clust.shrink_to_fit();
+    mf_clust.shrink_to_fit();
+
+    // Set owning_cluster pointers (must happen before detect_boundary_spins)
+    for (auto& qc : exact_clust)
+        for (auto s : qc.spins) s->owning_cluster = &qc;
+    for (auto& qc : mf_clust)
+        for (auto s : qc.spins) s->owning_cluster = &qc;
+
+    // Populate boundary_spins using each class's own criterion
+    for (auto& qc : exact_clust) qc.detect_boundary_spins();
+    for (auto& qc : mf_clust)    qc.detect_boundary_spins();
 }

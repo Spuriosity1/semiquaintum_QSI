@@ -1,26 +1,31 @@
-#include "monte_carlo.hpp"  
+#include "monte_carlo.hpp"
+#include <unordered_map>
 
 void MCState::partition_spins(std::vector<Spin>& spins){
 
     std::set<Spin*> boundary_spin_set;
 
-    for (const auto& c : clusters){
-        for (const auto s : c.spins){
-            for (const auto nb : s->neighbours){
-                if (!nb->deleted && nb->owning_cluster == nullptr) boundary_spin_set.insert(nb);
+    auto collect_boundaries = [&](auto& clusters) {
+        for (const auto& c : clusters) {
+            for (const auto s : c.spins) {
+                for (const auto nb : s->neighbours) {
+                    if (!nb->deleted && nb->owning_cluster == nullptr)
+                        boundary_spin_set.insert(nb);
+                }
             }
         }
-    }
+    };
+    collect_boundaries(exact_clusters);
+    collect_boundaries(mf_clusters);
 
     for (auto& s : spins){
-        if (!s.deleted && !boundary_spin_set.contains(static_cast<Spin*>(&s))){
+        if (!s.deleted && !s.is_quantum() && !boundary_spin_set.contains(static_cast<Spin*>(&s))){
             classical_spins.push_back(&s);
         }
     }
 
     this->boundary_spins.reserve(boundary_spin_set.size());
-
-    for (auto s : boundary_spin_set)   // local set
+    for (auto s : boundary_spin_set)
         this->boundary_spins.push_back(s);
 }
 
@@ -32,15 +37,15 @@ void MCState::partition_spins(std::vector<Spin>& spins){
 ///
 /// There are four kinds of spins.
 /// 1. deleted (trivial) spins, these do not count for anything.
-/// 2. quantum spins. These are close enough to defects 
+/// 2. quantum spins. These are close enough to defects
 ///    for the first order physics to be important.
-/// 3. 'boundary' spins. These are classical neighbours of quantum spins. 
-/// 4 . Fully classical spins with only classical neighbours.
+/// 3. 'boundary' spins. These are classical neighbours of quantum spins.
+/// 4. Fully classical spins with only classical neighbours.
 
 // Move 1: flip a fully classical (type 4) spin
 int try_flip_classical(MCSettings& mc, Spin* s) {
     const double Jzz = ModelParams::get().Jzz;
-    double dE = -2.0 * classical_bond_energy(s, Jzz); // flipping negates the bond energy
+    double dE = -2.0 * classical_bond_energy(s, Jzz);
     int accept = mc.uniform(mc.rng) < std::exp(-mc.beta * dE);
 
     if (accept) s->ising_val *= -1;
@@ -48,70 +53,90 @@ int try_flip_classical(MCSettings& mc, Spin* s) {
     return accept;
 }
 
-// Move 2: change eigenstate of a cluster (no boundary change)
+// Move 2a: change eigenstate of an exact cluster (no boundary change, no propagation)
 int try_flip_cluster_state(MCSettings& mc, QCluster& qc) {
-    int old_idx = qc.eigenstate_idx;
-    // propose a new eigenstate uniformly at random
+    int old_idx = qc.eigenstate_idx();
     int new_idx = std::uniform_int_distribution<int>(0, qc.hilbert_dim() - 1)(mc.rng);
-    double dE = qc.eigenvalues[new_idx] - qc.eigenvalues[old_idx];
+    double dE = qc.eigenvalue(new_idx) - qc.eigenvalue(old_idx);
 
     int accept = mc.uniform(mc.rng) < std::exp(-mc.beta * dE);
-    if (accept) qc.eigenstate_idx = new_idx;
+    if (accept) qc.set_eigenstate(new_idx);
     return accept;
 }
 
-// Move 3: flip a boundary (type 3) spin
-// This changes the cluster Hamiltonian, so we must re-diagonalise. 
-// Unavoidable side-effect: change the physical meaning of the whole cluster.
-//
+// Move 2b: change eigenstate of an MF cluster, propagating updated mean fields
+// to any neighbouring QClusterMF whose boundary configs depend on this cluster.
+int try_flip_cluster_state(MCSettings& mc, QClusterMF& qc) {
+    int old_idx = qc.eigenstate_idx();
+    int new_idx = std::uniform_int_distribution<int>(0, qc.hilbert_dim() - 1)(mc.rng);
+    double dE = qc.eigenvalue(new_idx) - qc.eigenvalue(old_idx);
+
+    // Build updated boundary configs for each neighbouring cluster whose field changes.
+    std::unordered_map<QClusterBase*, QClusterBase::BoundaryConfig> new_configs;
+    for (int si = 0; si < qc.n_spins(); si++) {
+        double old_sz = qc.sz_expectation_at(si, old_idx);
+        double new_sz = qc.sz_expectation_at(si, new_idx);
+        if (old_sz == new_sz) continue;
+        for (Spin* nb : qc.spins[si]->neighbours) {
+            QClusterBase* B = nb->owning_cluster;
+            if (!B || B == &qc) continue;
+            int bidx = B->boundary_index(qc.spins[si]);
+            if (bidx < 0) continue;
+            if (!new_configs.count(B)) new_configs[B] = B->boundary_config();
+            new_configs[B][bidx] = new_sz;
+        }
+    }
+
+    // Stage neighbour diagonalisations and accumulate ΔE.
+    struct NeighborUpdate { QClusterBase* B; QClusterBase::Snapshot snap; int kept_state; };
+    std::vector<NeighborUpdate> updates;
+    for (auto& [B, cfg] : new_configs) {
+        auto snap = B->propose_with_config(cfg);
+        dE += snap.energy_at(B->eigenstate_idx()) - B->energy();
+        updates.push_back({B, std::move(snap), B->eigenstate_idx()});
+    }
+
+    int accept = mc.uniform(mc.rng) < std::exp(-mc.beta * dE);
+    if (accept) {
+        qc.set_eigenstate(new_idx);
+        for (auto& u : updates)
+            u.B->commit(std::move(u.snap), u.kept_state);
+    }
+    return accept;
+}
+
+// Move 3: flip a boundary (type 3) spin.
+// This changes the cluster Hamiltonian, so we must re-diagonalise.
 // accept/reject on the combined ΔE_classical + ΔE_cluster
 int try_flip_boundary_spin(MCSettings& mc, Spin* s) {
-    // --- classical part: bonds to other classical spins ---
     const double Jzz = ModelParams::get().Jzz;
     double dE_classical = -2.0 * classical_bond_energy(s, Jzz);
-
-    // --- quantum part: ΔE for each cluster this spin borders ---
     double dE_quantum = 0.0;
-    // collect clusters affected and their new configs
+
     struct ClusterUpdate {
-        QCluster*      qc;
-        QCluster::BoundaryConfig new_config;
-        Eigen::VectorXd new_eigenvalues;
-        Eigen::MatrixXd new_eigenvectors;
-        int             new_eigenstate_idx;
+        QClusterBase*          qc;
+        QClusterBase::Snapshot snap;
+        int                    new_eigenstate_idx;
     };
     std::vector<ClusterUpdate> updates;
 
-
     for (Spin* nb : s->neighbours) {
-        QCluster* qc = nb->owning_cluster;
+        QClusterBase* qc = nb->owning_cluster;
 
-        // skip if either a) spin is not quantum or b) cluster has already been processed
         if (!qc ||
             std::any_of(updates.begin(), updates.end(),
-                        [&](const ClusterUpdate &u) { return u.qc == qc; }))
-          continue;
+                        [&](const ClusterUpdate& u) { return u.qc == qc; }))
+            continue;
 
-        // find which boundary index s is in qc->boundary_spins
-        int bidx = -1;
-        for (int i = 0; i < (int)qc->boundary_spins.size(); i++)
-            if (qc->boundary_spins[i] == s) { bidx = i; break; }
+        int bidx = qc->boundary_index(s);
         if (bidx < 0) continue;
 
-        QCluster::BoundaryConfig new_config = qc->boundary_config ^ (1u << bidx);
         double E_old = qc->energy();
-
-        // tentatively diagonalise with new config
-        QCluster tmp = *qc; // shallow copy is fine for this
-        tmp.diagonalise(new_config);
-
-        double E_new = tmp.eigenvalues[qc->eigenstate_idx];
+        auto snap = qc->propose_boundary_flip(bidx);
+        double E_new = snap.energy_at(qc->eigenstate_idx());
         dE_quantum += E_new - E_old;
 
-        updates.push_back({qc, new_config,
-                           std::move(tmp.eigenvalues),
-                           std::move(tmp.eigenvectors),
-                           qc->eigenstate_idx});
+        updates.push_back({qc, std::move(snap), qc->eigenstate_idx()});
     }
 
     double dE_total = dE_classical + dE_quantum;
@@ -119,12 +144,8 @@ int try_flip_boundary_spin(MCSettings& mc, Spin* s) {
     int accept = mc.uniform(mc.rng) < std::exp(-mc.beta * dE_total);
     if (accept) {
         s->ising_val *= -1;
-        for (auto& u : updates) {
-            u.qc->boundary_config  = u.new_config;
-            u.qc->eigenvalues      = std::move(u.new_eigenvalues);
-            u.qc->eigenvectors     = std::move(u.new_eigenvectors);
-            u.qc->eigenstate_idx   = u.new_eigenstate_idx;
-        }
+        for (auto& u : updates)
+            u.qc->commit(std::move(u.snap), u.new_eigenstate_idx);
     }
     return accept;
 }
@@ -132,99 +153,46 @@ int try_flip_boundary_spin(MCSettings& mc, Spin* s) {
 
 
 
-// Move 3a: flip a boundary (type 3) spin
-// This changes the cluster Hamiltonian, so we must re-diagonalise. 
-// Unavoidable side-effect: change the physical meaning of the whole cluster.
-// We sample from Boltzmann of the updated cluster.
-//
-// accept/reject on the combined ΔE_classical + ΔE_cluster
+// Move 3a: boundary flip with Boltzmann sampling of the updated cluster state.
 int try_flip_boundary_spin_cluster_Boltzmann(MCSettings& mc, Spin* s) {
-    // --- classical part: bonds to other classical spins ---
     const double Jzz = ModelParams::get().Jzz;
     double dE_classical = -2.0 * classical_bond_energy(s, Jzz);
-
-    // --- quantum part: ΔF for each cluster this spin borders ---
-    // uses free nergy in order to preseerve detailed blance
     double dF_quantum = 0.0;
-    // collect clusters affected and their new configs
+
     struct ClusterUpdate {
-        QCluster*      qc;
-        QCluster::BoundaryConfig new_config;
-        Eigen::VectorXd new_eigenvalues;
-        Eigen::MatrixXd new_eigenvectors;
-        int             new_eigenstate_idx;
+        QClusterBase*          qc;
+        QClusterBase::Snapshot snap;
+        int                    new_eigenstate_idx;
     };
     std::vector<ClusterUpdate> updates;
 
     for (Spin* nb : s->neighbours) {
-        QCluster* qc = nb->owning_cluster;
-        // skip if either a) spin is not quantum or b) cluster has already been processed
+        QClusterBase* qc = nb->owning_cluster;
         if (!qc ||
             std::any_of(updates.begin(), updates.end(),
-                        [&](const ClusterUpdate &u) { return u.qc == qc; }))
-          continue;
+                        [&](const ClusterUpdate& u) { return u.qc == qc; }))
+            continue;
 
-        // find which boundary index s is in qc->boundary_spins
-        int bidx = -1;
-        for (int i = 0; i < (int)qc->boundary_spins.size(); i++)
-            if (qc->boundary_spins[i] == s) { bidx = i; break; }
+        int bidx = qc->boundary_index(s);
         if (bidx < 0) continue;
 
-        QCluster::BoundaryConfig new_config = qc->boundary_config ^ (1u << bidx);
-        double betaF_old = -log(qc->partition_function(mc.beta));
+        double betaF_old = -std::log(qc->partition_function(mc.beta));
+        auto snap = qc->propose_boundary_flip(bidx);
 
-        // tentatively diagonalise with new config
-        QCluster tmp = *qc; // shallow copy is fine for this
-        tmp.diagonalise(new_config);
+        int new_idx = snap.sample_boltzmann(mc.beta, mc.uniform(mc.rng));
 
-        // choose new eigenstate from Boltzmann distribution on the updated cluster
-        double Z = tmp.partition_function(mc.beta);
-        double r = mc.uniform(mc.rng) * Z;
-        double acc = 0;
-        int new_idx = 0;
-        for (; new_idx < tmp.eigenvalues.size(); new_idx++) {
-            acc += std::exp(-mc.beta * tmp.eigenvalues[new_idx]);
-            if (acc >= r) break;
-        }
+        double betaF_new = -std::log(snap.partition_function(mc.beta));
+        dF_quantum += (betaF_new - betaF_old) / mc.beta;
 
-        double betaF_new = -log(tmp.partition_function(mc.beta));
-
-        dF_quantum += (betaF_new - betaF_old)/mc.beta;
-
-        updates.push_back({qc, new_config,
-                           std::move(tmp.eigenvalues),
-                           std::move(tmp.eigenvectors),
-                           new_idx});
+        updates.push_back({qc, std::move(snap), new_idx});
     }
-
-    /* A note on detailed balance
-     *
-     * Express the energy of a configuration {z[], w[], n[]}===x of the 
-     * classical spins, boundary spins and quantum spins respectively as 
-     *                          E(z[], w[], n[]).
-     * The target distribution is 
-     *          p(z[], w[], n[]) = 1/Z exp(-beta * E(z[], w[], n[])
-     * 
-     * Proposal distribution P( x' | x )
-     *
-     * Move:
-     * w[j]->-w[j] = w', n[Neigh(j)] -> n'[Neigh(j)]
-     * P(w', n' | w, n) = 1/Zloc exp(-beta * sum(E_n'(w') - E_n(w)))
-     *
-     * where, for cluster j, Zloc(w)[j] = \sum_n exp(-beta E_n(w)[j] )
-     *
-     */
 
     double dE_total = dE_classical + dF_quantum;
     int accept = mc.uniform(mc.rng) < std::exp(-mc.beta * dE_total);
     if (accept) {
         s->ising_val *= -1;
-        for (auto& u : updates) {
-            u.qc->boundary_config  = u.new_config;
-            u.qc->eigenvalues      = std::move(u.new_eigenvalues);
-            u.qc->eigenvectors     = std::move(u.new_eigenvectors);
-            u.qc->eigenstate_idx   = u.new_eigenstate_idx;
-        }
+        for (auto& u : updates)
+            u.qc->commit(std::move(u.snap), u.new_eigenstate_idx);
     }
     return accept;
 }
@@ -238,7 +206,10 @@ void MCState::sweep(MCSettings& mc_){
     for (auto s : boundary_spins){
         mc_.accepted_boundary += try_flip_boundary_spin(mc_, s);
     }
-    for (auto& qc : clusters){
+    for (auto& qc : exact_clusters){
+        mc_.accepted_quantum += try_flip_cluster_state(mc_, qc);
+    }
+    for (auto& qc : mf_clusters){
         mc_.accepted_quantum += try_flip_cluster_state(mc_, qc);
     }
 }
@@ -250,33 +221,28 @@ void MCState::sweep(MCSettings& mc_){
 
 double MCState::energy(){
     double E = 0;
-    // very easy to get this wrong.
-    
     double Jzz = ModelParams::get().Jzz;
 
-    // Pure-classical energy: Ising ZZ interactions between type 3 and type 4 spins without double counting
+    // Pure-classical energy: bonds between type 3 and type 4 spins, no double-counting
     for (auto s : classical_spins){
         double acc = 0;
         for (auto nb : s->neighbours){
-            if (!nb->deleted && !nb->is_quantum() && nb < s ) acc += nb->ising_val;
+            if (!nb->deleted && !nb->is_quantum() && nb < s) acc += nb->ising_val;
         }
-
         E += Jzz * acc * s->ising_val;
     }
 
     for (auto s : boundary_spins){
         double acc = 0;
         for (auto nb : s->neighbours){
-            if (!nb->deleted && !nb->is_quantum() && nb < s ) acc += nb->ising_val;
+            if (!nb->deleted && !nb->is_quantum() && nb < s) acc += nb->ising_val;
         }
-
         E += Jzz * acc * s->ising_val;
     }
 
-    // quantum energy (includes boundary - cluster interaction energy)
-    for (const auto& qc : clusters){
-        E += qc.energy();
-    }
+    // quantum energy (includes boundary–cluster interaction)
+    for (const auto& qc : exact_clusters) E += qc.energy();
+    for (const auto& qc : mf_clusters)    E += qc.energy();
 
     return E;
 }
