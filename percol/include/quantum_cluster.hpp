@@ -6,6 +6,8 @@
 #include "lattice_lib/unitcell_types.hpp"
 #include "lattice_lib/unitcellspec.hpp"
 #include <Eigen/Dense>
+#include <memory>
+#include <vector>
 
 struct ModelParams {
     double Jzz = 1.0;
@@ -93,8 +95,13 @@ inline bool ends_can_fluctuate(const Spin* a, const Spin* b){
 struct QClusterBase {
     using BoundaryConfig = uint32_t; // bitmask over boundary spins
 
+    static constexpr int MAX_CACHED_BOUNDARY = 12; // cache if 2^k <= 4096 configs
+
     std::vector<Spin*> spins;
     std::vector<Spin*> classical_boundary_spins;
+
+    // precomputed spectrum cache (null = cluster too large, fall back to eigensolver)
+    std::shared_ptr<const std::vector<Eigen::VectorXd>> eval_cache;
 
 
     // -- current state for MC --
@@ -173,6 +180,9 @@ struct QClusterMF : public QClusterBase {
     double expect_Sz(int n, int site_i) const {
         return Sz_expect(n, site_i);
     }
+
+    // precomputed Sz expectation cache (always set alongside eval_cache)
+    std::shared_ptr<const std::vector<Eigen::MatrixXd>> sz_cache;
 
     protected:
 

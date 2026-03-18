@@ -46,12 +46,52 @@ void QClusterBase::initialise(){
 void QCluster::initialise(){
     this->QClusterBase::initialise();
     build_matrix_rep();
+
+    if ((int)classical_boundary_spins.size() <= MAX_CACHED_BOUNDARY) {
+        int n_configs = 1 << (int)classical_boundary_spins.size();
+        auto cache = std::make_shared<std::vector<Eigen::VectorXd>>(n_configs);
+        for (int cfg = 0; cfg < n_configs; cfg++) {
+            auto H = diagonalise_ham_classical_bcs(classical_boundary_spins, (uint32_t)cfg);
+            Eigen::SelfAdjointEigenSolver<Eigen::MatrixXd> solver(H);
+            (*cache)[cfg] = solver.eigenvalues();
+        }
+        eval_cache = cache;
+    }
+
     diagonalise(boundary_config);
 }
 
 void QClusterMF::initialise(){
     this->QClusterBase::initialise();
     build_matrix_rep();
+
+    if ((int)classical_boundary_spins.size() <= MAX_CACHED_BOUNDARY) {
+        int n_configs = 1 << (int)classical_boundary_spins.size();
+        auto ecache = std::make_shared<std::vector<Eigen::VectorXd>>(n_configs);
+        auto scache = std::make_shared<std::vector<Eigen::MatrixXd>>(n_configs);
+        for (int cfg = 0; cfg < n_configs; cfg++) {
+            auto H = diagonalise_ham_classical_bcs(classical_boundary_spins, (uint32_t)cfg);
+            Eigen::SelfAdjointEigenSolver<Eigen::MatrixXd> solver(H);
+            (*ecache)[cfg] = solver.eigenvalues();
+            const auto& evals = solver.eigenvalues();
+            const auto& psi   = solver.eigenvectors();
+            Eigen::MatrixXd sz(evals.size(), (int)spins.size());
+            for (int site_i = 0; site_i < (int)spins.size(); site_i++) {
+                for (int n = 0; n < (int)evals.size(); n++) {
+                    double val = 0;
+                    for (int b = 0; b < hilbert_dim(); b++) {
+                        double zi = ((b >> site_i) & 1) ? -1.0 : +1.0;
+                        val += psi(b, n) * psi(b, n) * zi;
+                    }
+                    sz(n, site_i) = val;
+                }
+            }
+            (*scache)[cfg] = sz;
+        }
+        eval_cache = ecache;
+        sz_cache   = scache;
+    }
+
     diagonalise(boundary_config);
 
     mf_bonds.clear();
@@ -97,6 +137,12 @@ inline Eigen::MatrixXd QClusterBase::diagonalise_ham_classical_bcs(const std::ve
   // --- build full H for a given boundary config and diagonalise ---
 void QCluster::diagonalise(BoundaryConfig config) {
 
+    if (eval_cache) {
+        eigenvalues     = (*eval_cache)[config];
+        boundary_config = config;
+        return;
+    }
+
     auto H = diagonalise_ham_classical_bcs(classical_boundary_spins, config);
     Eigen::SelfAdjointEigenSolver<Eigen::MatrixXd> solver(H);
     eigenvalues  = solver.eigenvalues();
@@ -104,6 +150,13 @@ void QCluster::diagonalise(BoundaryConfig config) {
 }
 
 void QClusterMF::diagonalise(BoundaryConfig config) {
+
+    if (eval_cache) {
+        eigenvalues     = (*eval_cache)[config];
+        Sz_expect       = (*sz_cache)[config];
+        boundary_config = config;
+        return;
+    }
 
     auto H = diagonalise_ham_classical_bcs(classical_boundary_spins, config);
     Eigen::SelfAdjointEigenSolver<Eigen::MatrixXd> solver(H);
