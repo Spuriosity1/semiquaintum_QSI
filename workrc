@@ -1,0 +1,16 @@
+
+alias pqf="python3 scripts/plot_quantum_fraction.py ../output/percolator/hist_L10_*"
+alias acc="scripts/acc_heat_capacity.py"
+alias phc=scripts/plot_heat_capacity.py
+
+figdir="~/Documents/gh-papers/DefectsInQSI/figures"
+mkdir -p $figdir
+
+
+echo "Defined aliases: "
+echo `which pqf`
+echo `which acc`
+echo `which phc`
+echo
+echo "Defined env"
+echo "figdir=$figdir"
