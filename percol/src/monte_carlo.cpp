@@ -1,4 +1,6 @@
-#include "monte_carlo.hpp"  
+#include "random"
+#include "monte_carlo.hpp"
+#include <unordered_set>
 
 void MCState::partition_spins(std::vector<Spin>& spins){
 
@@ -13,7 +15,7 @@ void MCState::partition_spins(std::vector<Spin>& spins){
     }
 
     for (auto& s : spins){
-        if (!s.deleted && !boundary_spin_set.contains(static_cast<Spin*>(&s))){
+        if (!s.deleted && !s.is_quantum() && !boundary_spin_set.contains(static_cast<Spin*>(&s))){
             classical_spins.push_back(&s);
         }
     }
@@ -37,7 +39,8 @@ void MCState::partition_spins(std::vector<Spin>& spins){
 /// 3. 'boundary' spins. These are classical neighbours of quantum spins. 
 /// 4 . Fully classical spins with only classical neighbours.
 
-// Move 1: flip a fully classical (type 4) spin
+// Move 1: single-spin Metropolis on a fully classical (type 4) spin.
+// ΔE = −2 * Jzz * s * Σ_{classical neighbours} nb   (flipping negates all bonds).
 int try_flip_classical(MCSettings& mc, Spin* s) {
     const double Jzz = ModelParams::get().Jzz;
     double dE = -2.0 * classical_bond_energy(s, Jzz); // flipping negates the bond energy
@@ -48,9 +51,13 @@ int try_flip_classical(MCSettings& mc, Spin* s) {
     return accept;
 }
 
-// Move 1a: flip a closed classical ring
+// Move 1a: simultaneous flip of all 6 spins on a complete hexagonal plaquette.
+// These are zero-energy moves within the classical ice manifold (alternating
+// ↑↓↑↓↑↓ pattern has zero net bond energy change on flip).  Essential for
+// ergodicity: without ring moves the classical sector can get trapped.
+// Always accepted when the plaquette is in the alternating state; rejected otherwise.
 int try_flip_ring(Plaq* p) {
-    if (!p->is_complete) return false;
+    if (!p->is_complete) return 0;
     // always accept if flippable, otherwise reject
     int prev_ising = p->member_spins[0]->ising_val;
     for (int i=1; i<6; ++i){
@@ -65,7 +72,106 @@ int try_flip_ring(Plaq* p) {
     return 1;
 }
 
-// Move 2: change eigenstate of a cluster (no boundary change)
+
+// Move 1b: simultaneous flip of a worm.
+//
+// Finds a closed loop of classical (and/or boundary) spins and flips them all.
+// Zero-energy because at every tetrahedron in the path the two loop spins have
+// *opposite* ising_val (heal_val alternates ±), so (s_in + s_out) = 0 and each
+// tetra's contribution to the crossing-bond energy cancels.
+//
+// Boundary spins are allowed on the path.  When two boundary spins of the same
+// cluster appear on the worm they must carry opposite heal_val values, so their
+// net change to H_boundary also cancels — the cluster eigenvalues are unchanged.
+// We still call diagonalise() after the worm to keep boundary_config consistent
+// for future boundary-spin Metropolis moves; this is a cache lookup (O(1)).
+int try_flip_worm(MCSettings& mc, Spin* root) {
+    if (root->deleted || root->is_quantum()) return 0;
+    if (!root->owning_tetras[0] || !root->owning_tetras[1]) return 0;
+
+    Tetra* const tail_tetra = root->owning_tetras[0];
+    Tetra* head_tetra       = root->owning_tetras[1];
+
+    const int root_val = root->ising_val;
+    std::vector<Spin*> path = {root};
+    root->ising_val *= -1;
+    Spin* prev_spin = root;
+
+    // heal_val: the ising_val a candidate must currently have so that flipping it
+    // heals the defect at head_tetra and keeps (s_in + s_out) = 0 per tetra.
+    // Alternates every step: -root_val, +root_val, -root_val, …
+    int heal_val = -root_val;
+
+    constexpr int MAX_STEPS = 200;
+
+    while (head_tetra != tail_tetra) {
+        if ((int)path.size() > MAX_STEPS) {
+            for (Spin* s : path) s->ising_val *= -1;
+            return 0;
+        }
+
+        std::vector<Spin*> candidates;
+        for (Spin* s : head_tetra->member_spins) {
+            if (s == prev_spin || s->deleted || s->is_quantum()) continue;
+            if (s->ising_val != heal_val) continue;
+            candidates.push_back(s);
+        }
+
+        if (candidates.empty()) {
+            for (Spin* s : path) s->ising_val *= -1;
+            return 0;
+        }
+
+        Spin* next = candidates[
+            std::uniform_int_distribution<int>(0, (int)candidates.size()-1)(mc.rng)];
+
+        Tetra* next_head = (next->owning_tetras[0] == head_tetra)
+                            ? next->owning_tetras[1]
+                            : next->owning_tetras[0];
+        if (!next_head) {
+            for (Spin* s : path) s->ising_val *= -1;
+            return 0;
+        }
+
+        next->ising_val *= -1;
+        path.push_back(next);
+        prev_spin  = next;
+        heal_val   = -heal_val;
+        head_tetra = next_head;
+    }
+
+    // Validate: heal_val must equal root_val (odd number of steps taken) so that
+    // the defect propagated back to tail_tetra exactly cancels the original defect.
+    if (heal_val != root_val) {
+        for (Spin* s : path) s->ising_val *= -1;
+        return 0;
+    }
+
+    // Keep boundary_config consistent for any quantum clusters whose boundary spins
+    // were flipped.  diagonalise() is a cache lookup here — O(1) for small clusters.
+    std::unordered_set<QClusterBase*> touched;
+    for (Spin* s : path) {
+        for (Spin* nb : s->neighbours) {
+            if (!nb->deleted && nb->is_quantum() && nb->owning_cluster)
+                touched.insert(nb->owning_cluster);
+        }
+    }
+    for (QClusterBase* qcb : touched) {
+        auto* qc = static_cast<QClusterMF*>(qcb);
+        QClusterMF::BoundaryConfig new_cfg = 0;
+        for (int i = 0; i < (int)qc->classical_boundary_spins.size(); i++)
+            if (qc->classical_boundary_spins[i]->ising_val == +1)
+                new_cfg |= (1u << i);
+        qc->diagonalise(new_cfg);
+    }
+
+    return 1;  // loop closed, all flips committed
+}
+
+
+// Move 2 (QCluster): propose a uniformly random new eigenstate within a cluster.
+// The boundary config (and therefore the spectrum) is unchanged; only eigenstate_idx moves.
+// ΔE = eigenvalues[new] − eigenvalues[old].  Metropolis accept.
 int try_flip_cluster_state(MCSettings& mc, QCluster& qc) {
     int old_idx = qc.eigenstate_idx;
     // propose a new eigenstate uniformly at random
@@ -77,11 +183,15 @@ int try_flip_cluster_state(MCSettings& mc, QCluster& qc) {
     return accept;
 }
 
-// Move 3: flip a boundary (type 3) spin
-// This changes the cluster Hamiltonian, so we must re-diagonalise. 
-// Unavoidable side-effect: change the physical meaning of the whole cluster.
-//
-// accept/reject on the combined ΔE_classical + ΔE_cluster
+// Move 3 (QCluster): Metropolis flip of a boundary (type 3) spin.
+// Flipping s changes the Ising field seen by every adjacent cluster, which
+// shifts the entire cluster spectrum.  Steps:
+//   1. Classical ΔE from bonds to other classical/boundary spins.
+//   2. For each adjacent cluster: tentatively re-diagonalise with the new
+//      boundary config; ΔE_cluster = eigenvalues_new[old_idx] − eigenvalues_old[old_idx].
+//      (The eigenstate index is preserved across the boundary flip.)
+//   3. Global Metropolis on ΔE_classical + Σ ΔE_cluster.
+//   4. On accept: install new boundary_config and eigenvalues into each cluster.
 int try_flip_boundary_spin(MCSettings& mc, Spin* s) {
     // --- classical part: bonds to other classical spins ---
     const double Jzz = ModelParams::get().Jzz;
@@ -241,8 +351,12 @@ int try_flip_boundary_spin_cluster_Boltzmann(MCSettings& mc, Spin* s) {
 }
 
 
-// Helper: MF interaction energy for cluster qc in eigenstate n
-// Sums Jzz * <Sz_i(n)> * <Sz_j> over precomputed inter-cluster bonded pairs
+// Mean-field inter-cluster coupling energy for cluster qc in eigenstate n.
+// Approximates the Jzz bond between quantum spins in different clusters as
+//   Jzz * <Sz_i>_n * <Sz_j>_{eigenstate of other cluster}
+// summed over all cross-cluster nearest-neighbour pairs listed in mf_bonds.
+// Note: each bond is listed from both sides, so MCStateMF::energy() applies
+// a factor of 0.5 to avoid double-counting.
 static double mf_interaction(const QClusterMF& qc, int n) {
     double Jzz = ModelParams::get().Jzz;
     double E = 0;
@@ -252,21 +366,40 @@ static double mf_interaction(const QClusterMF& qc, int n) {
     return E;
 }
 
-// MF Move 2: change eigenstate of a QClusterMF
+// Move 2 (QClusterMF): Gibbs (Boltzmann) sample a new eigenstate.
+// Samples directly from exp(-β*(E_n + E_MF_n)), where E_MF_n = mf_interaction(qc, n)
+// uses the current eigenstate of neighbouring clusters (mean-field approximation).
+// Changing eigenstate_idx alters <Sz> exported to neighbouring clusters,
+// but those clusters' mf_interaction is only re-evaluated on their next move
+// (mean-field is not self-consistent within a sweep).
+// Gibbs sampling avoids the self-loop bias of uniform Metropolis: acceptance → 0
+// as T → 0 when the ground state is unique.
 int try_flip_cluster_state_MF(MCSettings& mc, QClusterMF& qc) {
     int old_idx = qc.eigenstate_idx;
-    int new_idx = std::uniform_int_distribution<int>(0, qc.hilbert_dim() - 1)(mc.rng);
-    double dE_internal = qc.eigenvalues[new_idx] - qc.eigenvalues[old_idx];
-    double dE_mf       = mf_interaction(qc, new_idx) - mf_interaction(qc, old_idx);
+    int dim = qc.hilbert_dim();
 
-    int accept = mc.uniform(mc.rng) < std::exp(-mc.beta * (dE_internal + dE_mf));
-    if (accept) qc.eigenstate_idx = new_idx;
-    return accept;
+    double Z = 0;
+    for (int n = 0; n < dim; n++)
+        Z += std::exp(-mc.beta * (qc.eigenvalues[n] + mf_interaction(qc, n)));
+
+    double r = mc.uniform(mc.rng) * Z;
+    double acc = 0;
+    int new_idx = dim - 1;
+    for (int n = 0; n < dim; n++) {
+        acc += std::exp(-mc.beta * (qc.eigenvalues[n] + mf_interaction(qc, n)));
+        if (acc >= r) { new_idx = n; break; }
+    }
+
+    qc.eigenstate_idx = new_idx;
+    return new_idx != old_idx ? 1 : 0;
 }
 
 
-// MF Move 3: flip a classical boundary spin adjacent to QClusterMF clusters
-int try_flip_boundary_spin_MF(MCSettings& mc, Spin* s) {
+// Move 3 (QClusterMF): Metropolis flip of a boundary spin — exact version.
+// Re-diagonalises each affected cluster speculatively to get the exact eigenvalue shift.
+// On accept: *qc = move(tmp) installs precomputed eigenvalues + Sz_expect atomically.
+// Active when MCStateMF::sweep<true> is used; the cheaper MF version is sweep<false>.
+int try_flip_boundary_spin_MF_exact(MCSettings& mc, Spin* s) {
     const double Jzz = ModelParams::get().Jzz;
     double dE_classical = -2.0 * classical_bond_energy(s, Jzz);
 
@@ -274,7 +407,7 @@ int try_flip_boundary_spin_MF(MCSettings& mc, Spin* s) {
     struct ClusterUpdate {
         QClusterMF* qc;
         QClusterMF::BoundaryConfig new_config;
-        QClusterMF tmp;  // tentative diagonalisation result — moved in on accept
+        QClusterMF tmp;
     };
     std::vector<ClusterUpdate> updates;
     updates.reserve(6);
@@ -310,7 +443,56 @@ int try_flip_boundary_spin_MF(MCSettings& mc, Spin* s) {
     if (accept) {
         s->ising_val *= -1;
         for (auto& u : updates)
-            *u.qc = std::move(u.tmp);  // installs precomputed eigenvalues + Sz_expect
+            *u.qc = std::move(u.tmp);
+    }
+    return accept;
+}
+
+// Move 3 (QClusterMF): Metropolis flip of a boundary spin adjacent to QClusterMF clusters.
+// ΔE_classical: bonds to other classical/boundary spins (exact).
+// ΔE_cluster:   Jzz * (−2σ_s) * Σ_{cluster spins nb} ⟨Sz_nb⟩  (MF approximation).
+//   This avoids speculative re-diagonalisation; the boundary coupling is handled the
+//   same way as cross-cluster MF bonds.  On accept, diagonalise() updates the cluster
+//   eigenvalues and Sz_expect via an O(1) cache lookup.
+//   For the exact version (speculative re-diag) see try_flip_boundary_spin_MF_exact above.
+int try_flip_boundary_spin_MF(MCSettings& mc, Spin* s) {
+    const double Jzz = ModelParams::get().Jzz;
+    double dE = -2.0 * classical_bond_energy(s, Jzz);
+
+    struct ClusterUpdate {
+        QClusterMF* qc;
+        QClusterMF::BoundaryConfig new_config;
+    };
+    std::vector<ClusterUpdate> updates;
+    updates.reserve(6);
+
+    for (Spin* nb : s->neighbours) {
+        QClusterMF* qc = static_cast<QClusterMF*>(nb->owning_cluster);
+        if (!qc) continue;
+
+        int site_nb = qc->spin_index(nb);
+        if (site_nb < 0) continue;
+
+        // MF estimate: flipping s changes its coupling to each adjacent cluster spin
+        dE += Jzz * (-2.0 * s->ising_val) * qc->expect_Sz(qc->eigenstate_idx, site_nb);
+
+        if (std::any_of(updates.begin(), updates.end(),
+                        [&](const ClusterUpdate& u) { return u.qc == qc; }))
+            continue;
+
+        int bidx = -1;
+        for (int i = 0; i < (int)qc->classical_boundary_spins.size(); i++)
+            if (qc->classical_boundary_spins[i] == s) { bidx = i; break; }
+        if (bidx < 0) continue;
+
+        updates.push_back({qc, qc->boundary_config ^ (1u << bidx)});
+    }
+
+    int accept = mc.uniform(mc.rng) < std::exp(-mc.beta * dE);
+    if (accept) {
+        s->ising_val *= -1;
+        for (auto& u : updates)
+            u.qc->diagonalise(u.new_config);  // O(1) cache lookup; updates eigenvalues + Sz_expect + boundary_config
     }
     return accept;
 }
@@ -382,7 +564,7 @@ void MCStateMF::partition_spins(std::vector<Spin>& spins) {
     }
 
     for (auto& s : spins) {
-        if (!s.deleted && !boundary_spin_set.contains(static_cast<Spin*>(&s))) {
+        if (!s.deleted && !s.is_quantum() && !boundary_spin_set.contains(static_cast<Spin*>(&s))) {
             classical_spins.push_back(&s);
         }
     }
@@ -393,6 +575,7 @@ void MCStateMF::partition_spins(std::vector<Spin>& spins) {
 }
 
 
+template<bool UseExactBoundary>
 void MCStateMF::sweep(MCSettings& mc_) {
     mc_.sweeps_attempted++;
     for (auto p : intact_plaqs) {
@@ -401,15 +584,39 @@ void MCStateMF::sweep(MCSettings& mc_) {
     for (auto s : classical_spins) {
         mc_.accepted_classical += try_flip_classical(mc_, s);
     }
+
+    auto s = classical_spins[
+        std::uniform_int_distribution<int>(0, (int)classical_spins.size()-1)(mc_.rng)
+    ];
+    mc_.accepted_worm += try_flip_worm(mc_, s);
+
     for (auto s : boundary_spins) {
-        mc_.accepted_boundary += try_flip_boundary_spin_MF(mc_, s);
+        if constexpr (UseExactBoundary)
+            mc_.accepted_boundary += try_flip_boundary_spin_MF_exact(mc_, s);
+        else
+            mc_.accepted_boundary += try_flip_boundary_spin_MF(mc_, s);
     }
     for (auto& qc : clusters) {
         mc_.accepted_quantum += try_flip_cluster_state_MF(mc_, qc);
     }
 }
 
+template void MCStateMF::sweep<false>(MCSettings&);
+template void MCStateMF::sweep<true>(MCSettings&);
 
+
+// Total energy of the system.  Three additive contributions:
+//
+//  1. Classical ZZ bonds between type-3 (boundary) and type-4 (classical) spins.
+//     Pointer ordering (nb < s) avoids double-counting.
+//     Bonds to quantum spins are excluded — those are inside the cluster eigenvalue.
+//
+//  2. Cluster eigenvalues: each cluster contributes eigenvalues[eigenstate_idx],
+//     which already includes the Jzz coupling to its classical boundary spins.
+//
+//  3. MF cross-terms: 0.5 * Jzz * Σ_{MF bonds} <Sz_i> * <Sz_j>.
+//     The 0.5 cancels the double-counting arising from each bond appearing in
+//     both clusters' mf_bonds list.
 double MCStateMF::energy() {
     double E = 0;
     double Jzz = ModelParams::get().Jzz;

@@ -91,7 +91,7 @@ int main (int argc, char *argv[]) {
     double p = ap.get<float>("p"); // site deletion probability
     size_t seed = ap.get<size_t>("--seed");
 
-    SuperLat sc = initialise_lattice(L);
+    QClattice sc = initialise_lattice(L);
 
     size_t nsweep = ap.get<size_t>("--nsweep");
 
@@ -122,9 +122,9 @@ int main (int argc, char *argv[]) {
             std::vector<QCluster> clusters;
             // populates state.clusters
             if (cdef == "nn2"){
-                identify_quantum_clusters<QuantumRule::eq24nn>(seed_tetras, clusters);
-            } else if (cdef == "nn24") {
                 identify_quantum_clusters<QuantumRule::eq2nn>(seed_tetras, clusters);
+            } else if (cdef == "nn24") {
+                identify_quantum_clusters<QuantumRule::eq24nn>(seed_tetras, clusters);
             }
 
             for (const auto& Q : clusters) cluster_hist[ Q.spins.size() ]++;
