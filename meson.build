@@ -7,9 +7,26 @@ project('dmnd_dil_2', ['cpp', 'c'],
 )
 
 
+
+hdf5_inc = get_option('hdf5_inc')
+hdf5_lib = get_option('hdf5_lib')
+
+if hdf5_inc != '' or hdf5_lib != ''
+  message('Using custom HDF5 at ' + hdf5_inc + ', lib at ' + hdf5_lib)
+
+  hdf5_inc = include_directories(hdf5_inc)
+
+  hdf5_dep = declare_dependency(
+    include_directories: hdf5_inc,
+    link_args: ['-L' + hdf5_lib, '-lhdf5']
+  )
+else
+  hdf5_dep = dependency('hdf5', language: 'c', required: true)
+endif
+
 project_inc = ['include']
 
-lil_dep = dependency('latlib')
+lil_dep = dependency('lattice_lib')
 
 subdir('common')
 subdir('percol')

@@ -2,9 +2,10 @@ percol_inc = [project_inc, common_inc, include_directories('include')]
 
 eigen_dep = dependency('Eigen3', method: 'cmake',  modules: ['Eigen3::Eigen'], required: true).as_system()
 
-hdf5_dep = dependency('hdf5', required: true, language: 'c')
 
-main_deps = [lil_dep]
+main_deps = [
+  dependency('nlohmann_json', required: true),
+  lil_dep]
 
 percol_lib = static_library('percol_lib', 
   ['src/quantum_cluster.cpp', 'src/monte_carlo.cpp'],
