@@ -1,4 +1,4 @@
-option('hdf5_inc', type: 'string', value: '', description: 'Path to custom HDF5
-installation include dir')
-option('hdf5_lib', type: 'string', value: '', description: 'Path to custom HDF5
-installation lib dir')
+option('hdf5_inc', type: 'string', value: '', description: 
+  'Path to custom HDF5 installation include dir')
+option('hdf5_lib', type: 'string', value: '', description:  
+  'Path to custom HDF5 installation lib dir')

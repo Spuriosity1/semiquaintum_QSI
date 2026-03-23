@@ -39,6 +39,7 @@ class Q_manager {
         auto& acc = spinon2_expectation.back();
         auto& count_acc = count.back();
         for (const auto& t : sc.get_objects<Tetra>()){
+            if (t->neighbours.size() == 0) continue;
             double Q=0;
             for (auto s : t.member_spins){
                 if (s->deleted) continue;
