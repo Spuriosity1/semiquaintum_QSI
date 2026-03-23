@@ -75,6 +75,11 @@ int main (int argc, char *argv[]) {
         .help("YY coupling strength on quantum clusters")
         .default_value((double) 0.1)
         .scan<'g', double>();
+
+    ap.add_argument("--include_second_order", "-a")
+        .help("Includes also second order processes")
+        .default_value(false)
+        .implicit_value(true);
 /// BOOK-KEEPING
 
     ap.add_argument("--seed", "-s")
@@ -93,7 +98,11 @@ int main (int argc, char *argv[]) {
         .default_value(static_cast<size_t>(100))
         .scan<'i', size_t>();
     ap.add_argument("--nsweep", "-w")
-        .help("Iterations in the RNG sweep")
+        .help("Sweeps to establish equilibrium")
+        .scan<'i', size_t>();
+    ap.add_argument("--nsamp")
+        .help("Sampling steps post sweep")
+        .default_value(static_cast<size_t>(128))
         .scan<'i', size_t>();
     ap.add_argument("--nstep")
         .help("Iterations in the RNG sweep")
@@ -109,11 +118,6 @@ int main (int argc, char *argv[]) {
         .default_value(0.001)
         .scan<'g', double>();
 
-
-    ap.add_argument("--include_second_order", "-a")
-        .help("Includes also second order processes")
-        .default_value(false)
-        .implicit_value(true);
 
     ap.add_argument("--mf_boundary")
         .help("Use approximate eigenvalue shift for boundary spin flips (faster but less accurate than default)")
@@ -142,6 +146,7 @@ int main (int argc, char *argv[]) {
     double p = ap.get<float>("p"); // site deletion probability
     size_t seed = ap.get<size_t>("--seed");
     size_t nsweep = ap.get<size_t>("--nsweep");
+    size_t nsamp = ap.get<size_t>("--nsamp");
     size_t nburn = ap.get<size_t>("--nburn");
     bool exact_boundary = !ap.get<bool>("--mf_boundary");
     int  verbosity      = ap.get<int>("--verbosity");
@@ -211,11 +216,16 @@ int main (int argc, char *argv[]) {
         for (size_t n=0; n<nsweep; n++){
             if (exact_boundary) state.sweep<true>(params);
             else                state.sweep<false>(params);
-            em.sample(state.energy());
-            sm.sample(sc);
         }
         double ms_per_sweep = std::chrono::duration<double, std::milli>(
                                   std::chrono::steady_clock::now() - t0).count() / nsweep;
+
+        for (size_t n=0; n<nsamp; n++){
+            if (exact_boundary) state.sweep<true>(params);
+            else                state.sweep<false>(params);
+            em.sample(state.energy());
+            sm.sample(sc);
+        }
 
         if (verbosity >= 1) {
             params.accepted_plaq     /= state.intact_plaqs.size();
