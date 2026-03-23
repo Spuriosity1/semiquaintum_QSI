@@ -127,7 +127,7 @@ int main (int argc, char *argv[]) {
 
     MCSettings params;
 
-    SuperLat sc = initialise_lattice(L);
+    QClattice sc = initialise_lattice(L);
 
     // Delete about p*100% of the spins
     // (Bernoulli sample)

@@ -63,7 +63,7 @@ inline ipos_t floordiv(const ipos_t& x, int base){
 }
 
 using MyCell = UnitCellSpecifier<Spin, Bond, Plaq>;
-using SuperLat = Supercell<Spin, Bond, Plaq>;
+using QClattice = Supercell<Spin, Bond, Plaq>;
 
 // Generates a supercell of cubic dimension L
 inline auto initialise_lattice(int L)
@@ -180,7 +180,7 @@ inline void set_spin_deleted_fast(Spin& s, bool deleted){
 
 // Sweeps through all spins, and deletes with probability p
 // i.e. p = 0 means 100% clean
-inline void spin_sweep(SuperLat& sc, double p, std::mt19937& rng){
+inline void spin_sweep(QClattice& sc, double p, std::mt19937& rng){
     static auto rand01 = std::uniform_real_distribution();
 
     for (auto& s : sc.get_objects<Spin>()){

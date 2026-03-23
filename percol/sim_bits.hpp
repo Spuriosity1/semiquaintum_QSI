@@ -1,6 +1,10 @@
 #pragma once
 
 #include "quantum_cluster.hpp"
+#include "H5Gpublic.h"
+#include "H5Ipublic.h"
+#include "H5Ppublic.h"
+#include <array>
 #include <ostream>
 #include <unordered_map>
 #include <unordered_set>
@@ -32,14 +36,38 @@ inline void output_cluster_dist(std::ostream& os, std::vector<ClusterT>& cluster
 
     output_cluster_hist(os, hist, denom);
 
+}
 
+
+// returns ideal GSE in units of Jzz
+inline int calc_GS_energy(std::vector<Tetra> tetras){
+
+    int E=0;
+    for (auto& t : tetras){
+        switch (t.neighbours.size()) {
+            case 4:
+                E += -2;
+                break;
+            case 3:
+                E += -1;
+                break;
+            case 2:
+                E += -1;
+                break;
+            case 1:
+            case 0:
+            default:               
+                break;
+        }
+    }
+    return E;
 }
 
 
 // N.B. I thiught of optimising this slightly by modifying the deleted spins' 
 // neighbours directly, but you pay a linear cost anyway 
-inline auto delete_spins(std::mt19937& rng, SuperLat& sc, double p,
-    std::unordered_set<Tetra*>& seed_tetras, std::vector<Plaq*>* intact_plaqs=nullptr){
+inline auto delete_spins(std::mt19937& rng, QClattice& sc, double p,
+    std::unordered_set<Tetra*>& seed_tetras){
     seed_tetras.clear();
     static auto rand01 = std::uniform_real_distribution();
 
@@ -72,25 +100,25 @@ inline auto delete_spins(std::mt19937& rng, SuperLat& sc, double p,
             }
 
         }
+    }
+}
 
-        if (intact_plaqs != nullptr){
-            intact_plaqs->resize(0);
-            for (auto [plaq_sl, p] : cell.enumerate_objects<Plaq>()){
-                p->is_complete=true;
-                for (auto& s: p->member_spins){
-                    if (s->deleted || s->is_quantum()) {
-                        p->is_complete = false;
-                        break;
-                    }
-                }
-                if (p->is_complete) intact_plaqs->push_back(p);
+
+// identifies intact classical hexagons
+inline auto identify_flippable_hexas(QClattice& sc, std::vector<Plaq *>& intact_plaqs) {
+    for (auto &p : sc.get_objects<Plaq>()) {
+        p.is_complete = true;
+        for (auto s : p.member_spins) {
+            if (s->deleted || s->is_quantum()) {
+                p.is_complete = false;
+                break;
             }
         }
+        if (p.is_complete)
+            intact_plaqs.push_back(&p);
     }
-
-    
-
 }
+
 
 
 
@@ -100,7 +128,7 @@ inline auto initialise_lattice(int L)
 {
     using namespace pyrochlore;
 
-    MyCell cell(imat33_t::from_cols({8,0,0},{0,8,0},{0,0,8}));
+    QCcellspec cell(imat33_t::from_cols({8,0,0},{0,8,0},{0,0,8}));
 
     for (int fcc_i=0; fcc_i<4; fcc_i++){
         const auto& r0 = fcc[fcc_i];
@@ -430,5 +458,46 @@ inline void identify_1o_clusters(
             }
         }
     }
+}
+
+
+// Write a "/geometry" group to an open HDF5 file with lattice statistics
+// that are fixed for this disorder realisation:
+//
+//   n_spins            (scalar)  — number of non-deleted spins
+//   n_tetras_by_intact (hsize_t[5]) — n_tetras_by_intact[k] = number of
+//                                     tetrahedra with exactly k intact spins
+inline void write_geometry_group(hid_t file_id, QClattice& sc,
+                                 const char* group_name = "geometry") {
+    size_t n_spins = 0;
+    for (const auto& s : sc.get_objects<Spin>())
+        if (!s.deleted) n_spins++;
+
+    std::array<hsize_t, 5> n_tetras_by_intact = {0, 0, 0, 0, 0};
+    for (const auto& t : sc.get_objects<Tetra>()) {
+        size_t intact = 0;
+        for (auto s : t.member_spins) if (!s->deleted) intact++;
+        n_tetras_by_intact[intact]++;
+    }
+
+    hid_t grp = H5Gcreate2(file_id, group_name, H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT);
+
+    hid_t scalar_space = H5Screate(H5S_SCALAR);
+    hid_t ds = H5Dcreate2(grp, "n_spins", H5T_NATIVE_HSIZE,
+                           scalar_space, H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT);
+    H5Dwrite(ds, H5T_NATIVE_HSIZE, H5S_ALL, H5S_ALL, H5P_DEFAULT, &n_spins);
+    H5Dclose(ds);
+    H5Sclose(scalar_space);
+
+    hsize_t dim5 = 5;
+    hid_t arr_space = H5Screate_simple(1, &dim5, nullptr);
+    ds = H5Dcreate2(grp, "n_tetras_by_intact", H5T_NATIVE_HSIZE,
+                    arr_space, H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT);
+    H5Dwrite(ds, H5T_NATIVE_HSIZE, H5S_ALL, H5S_ALL, H5P_DEFAULT,
+             n_tetras_by_intact.data());
+    H5Dclose(ds);
+    H5Sclose(arr_space);
+
+    H5Gclose(grp);
 }
 

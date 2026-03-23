@@ -122,7 +122,7 @@ int main (int argc, char *argv[]) {
     size_t seed = ap.get<size_t>("--seed");
     size_t nsweep = ap.get<size_t>("--nsweep");
 
-    SuperLat sc = initialise_lattice(L);
+    QClattice sc = initialise_lattice(L);
 //    cerr<<"Latvecs: "<<sc.lattice.get_lattice_vectors()<<"\n";
 
     std::vector<int> links_percolate; // stores 1=percolates, 

@@ -9,6 +9,9 @@
 #include <memory>
 #include <vector>
 
+// Global XXZ coupling constants.  Read by build_matrix_rep() and
+// diagonalise_ham_classical_bcs() at call time, so they must be set
+// before the first MC sweep (not just before initialise()).
 struct ModelParams {
     double Jzz = 1.0;
     double Jxx = 0.5;
@@ -84,6 +87,10 @@ struct Tetra {
 
 
 
+// Returns true if the bond a–b connects two tetrahedra that are both
+// "defect" tetrahedra (1 or 3 occupied sites).  Only such bonds carry
+// transverse (XX+YY) terms in the Hamiltonian; bonds ending on a full
+// or empty tetrahedron are purely Ising.
 inline bool ends_can_fluctuate(const Spin* a, const Spin* b){
     int end_sl = (a->owning_tetras[0] == b->owning_tetras[0]) ? 1 : 0; 
     // sl of the tetrahedra on the edges of the bond
@@ -92,8 +99,20 @@ inline bool ends_can_fluctuate(const Spin* a, const Spin* b){
 }
 
 
+// Base for a connected set of quantum spins treated by exact diagonalisation.
+//
+// The Hamiltonian is split into two parts:
+//   H = H_base  +  H_boundary(boundary_config)
+//
+// H_base holds the intra-cluster ZZ + XX/YY couplings and is fixed after
+// initialise().  H_boundary adds Ising couplings to the surrounding
+// classical (boundary) spins; it is a diagonal correction parameterised by
+// the bitmask boundary_config and recomputed whenever a boundary spin flips.
+//
+// The cluster lives in a single eigenstate (eigenstate_idx) during the MC.
+// Energy = eigenvalues[eigenstate_idx].
 struct QClusterBase {
-    using BoundaryConfig = uint32_t; // bitmask over boundary spins
+    using BoundaryConfig = uint32_t; // bitmask over boundary spins; bit i set ↔ classical_boundary_spins[i] == +1
 
     static constexpr int MAX_CACHED_BOUNDARY = 12; // cache if 2^k <= 4096 configs
 
@@ -150,17 +169,25 @@ struct QClusterBase {
 
     protected:
 
-    Eigen::MatrixXd diagonalise_ham_classical_bcs(const std::vector<Spin*>& classical_spins, uint32_t classical_config);
+    Eigen::MatrixXd ham_with_classical_bcs(const std::vector<Spin*>& classical_spins, uint32_t classical_config);
 };
 
+// Exact cluster: clusters are independent.  Inter-cluster quantum bonds
+// are treated as classical (boundary) spins from the perspective of each cluster.
 struct QCluster : public QClusterBase {
     void initialise() override;
     void diagonalise(BoundaryConfig config) override;
 };
 
 
-// boundary_config is treated as boundary conditions of the neighbouring classical spins.
-// Quantum spins are treated differently: the mean field <Sz>
+// Mean-field cluster: clusters that are quantum-adjacent to each other are
+// coupled via <Sz> of each other's current eigenstate rather than by
+// a shared Hilbert space.  This replaces an exponentially large multi-cluster
+// diagonalisation with an O(N) mean-field correction.
+//
+// Classical boundary spins enter H as before (exact Ising coupling).
+// Quantum boundary spins (quantum_boundary_spins) belong to neighbouring
+// clusters and contribute through mf_bonds / mf_interaction().
 struct QClusterMF : public QClusterBase {
 
     std::vector<Spin*> quantum_boundary_spins;
@@ -193,5 +220,5 @@ struct QClusterMF : public QClusterBase {
 
 const static int MAX_CLUSTER_SPINS = 16;
 
-using MyCell = UnitCellSpecifier<Spin, Tetra, Plaq>;
-using SuperLat = Supercell<Spin, Tetra, Plaq>;
+using QCcellspec = UnitCellSpecifier<Spin, Tetra, Plaq>;
+using QClattice = Supercell<Spin, Tetra, Plaq>;
