@@ -95,14 +95,16 @@ int main (int argc, char *argv[]) {
 
     ap.add_argument("--nburn")
         .help("Burn-In Iterations in the RNG sweep")
-        .default_value(static_cast<size_t>(100))
+        .default_value(static_cast<size_t>(128))
         .scan<'i', size_t>();
     ap.add_argument("--nsweep", "-w")
-        .help("Sweeps to establish equilibrium")
+        .help("Iterations in the sweep")
+        .default_value(static_cast<size_t>(16))
         .scan<'i', size_t>();
+
     ap.add_argument("--nsamp")
-        .help("Sampling steps post sweep")
-        .default_value(static_cast<size_t>(128))
+        .help("Sampling steps in the sweep")
+        .default_value(static_cast<size_t>(16))
         .scan<'i', size_t>();
     ap.add_argument("--nstep")
         .help("Iterations in the RNG sweep")
@@ -212,17 +214,18 @@ int main (int argc, char *argv[]) {
         sm.new_T(T);
         params.beta /= factor;
 
-        auto t0 = std::chrono::steady_clock::now();
-        for (size_t n=0; n<nsweep; n++){
+        
+        for (size_t n=0; n<nburn; n++){
             if (exact_boundary) state.sweep<true>(params);
             else                state.sweep<false>(params);
         }
-        double ms_per_sweep = std::chrono::duration<double, std::milli>(
-                                  std::chrono::steady_clock::now() - t0).count() / nsweep;
 
         for (size_t n=0; n<nsamp; n++){
-            if (exact_boundary) state.sweep<true>(params);
-            else                state.sweep<false>(params);
+            for (size_t n=0; n<nsweep; n++){
+                if (exact_boundary) state.sweep<true>(params);
+                else                state.sweep<false>(params);
+            }
+
             em.sample(state.energy());
             sm.sample(sc);
         }
@@ -235,8 +238,7 @@ int main (int argc, char *argv[]) {
 
             std::cout << std::setprecision(6) << "T = " << T
                       << "\tE = " << em.curr_E()
-                      << "\t" << params.acceptance()
-                      << "\t" << std::fixed << std::setprecision(2) << ms_per_sweep << " ms/sweep\n";
+                      << "\t" << params.acceptance() <<"\n";
         }
 
         if (verbosity >= 2) {
