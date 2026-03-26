@@ -4,8 +4,14 @@ import sys
 import h5py
 import numpy as np
 import os.path
+import argparse
 import matplotlib.pyplot as plt
 
+
+plt.rcParams.update({
+    "text.usetex": True,
+    "font.family": "serif"
+})
 
 
 
@@ -80,47 +86,67 @@ def plot_file(fname, axes, color, label):
     if se_C is not None:
         se_C = se_C[idx]
 
-    ax_C, ax_E = axes
+    ax_C = axes
 
     ax_C.plot(T, C, marker="o", markersize=3, color=color, label=label)
-    # ax_C.plot(0.5*(T[1:]+T[:-1]), np.diff(E_mean)/np.diff(T) / N )
     if se_C is not None:
         ax_C.fill_between(T, C - se_C, C + se_C, alpha=0.2, color=color)
 
-    ax_E.plot(T, E_mean / N, marker="o", markersize=3, color=color, label=label)
-    ax_E.fill_between(T, (E_mean - se_E) / N, (E_mean + se_E) / N, alpha=0.2, color=color)
+#    ax_E.plot(T, E_mean / N, marker="o", markersize=3, color=color, label=label)
+#    ax_E.fill_between(T, (E_mean - se_E) / N, (E_mean + se_E) / N, alpha=0.2, color=color)
 
 
-def main(fnames):
-    fig, axes = plt.subplots(2, 1, figsize=(6, 7), sharex=True)
+def main(args):
+
+    fnames = args.files 
+    labels = args.labels
+
+    fig, axes = plt.subplots(figsize=(3.5, 3))
 
     cmap   = plt.colormaps["tab10"]
     colors = [cmap(i) for i in range(len(fnames))]
 
-    for fname, color in zip(fnames, colors):
-        label = os.path.basename(fname)
+    if labels is None:
+        labels = [os.path.basename(fname) for fname in fnames]
+
+    for fname, color, label in zip(fnames, colors, labels):
         plot_file(fname, axes, color, label)
 
-    ax_C, ax_E = axes
+    ax_C = axes
     ax_C.set_ylabel("Specific heat $C/N$")
+    ax_C.set_xlabel("Temperature $T$")
     ax_C.set_xscale("log")
-    ax_C.set_yscale("log")
+    if (args.y_logscale):
+        ax_C.set_yscale("log")
     ax_C.grid(True)
     ax_C.legend(fontsize=7)
 
-    ax_E.set_ylabel("Mean energy $\\langle E \\rangle / N$")
-    ax_E.set_xlabel("Temperature $T$")
-    ax_E.set_xscale("log")
-    ax_E.grid(True)
-    ax_E.legend(fontsize=7)
+    if (args.xlim is not None):
+        print(args.xlim)
+        ax_C.set_xlim(args.xlim)
+
+#    ax_E.set_ylabel("Mean energy $\\langle E \\rangle / N$")
+#    ax_E.set_xscale("log")
+#    ax_E.grid(True)
+#    ax_E.legend(fontsize=7)
 
     fig.tight_layout()
     plt.show()
 
 
 if __name__ == "__main__":
-    if len(sys.argv) < 2:
-        print("Usage: python plot_heat_capacity.py FILE1.h5 [FILE2.h5 ...]")
-        sys.exit(1)
+    parser = argparse.ArgumentParser(
+        description="Plots heat capacity of one or many merged seeds.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=__doc__,
+    )
 
-    main(sys.argv[1:])
+
+    parser.add_argument("files", nargs='+', help="output hdf5 files")
+    parser.add_argument("--labels", nargs='+', help="labels for plot")
+    parser.add_argument("--xlim", nargs=2, help="x limits", type=float)
+    parser.add_argument("--y_logscale", action="store_true")
+    args=parser.parse_args()
+
+
+    main(args)

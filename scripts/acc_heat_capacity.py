@@ -33,12 +33,21 @@ def load_raw(fname):
     return T, E, E2, n, n_spins
 
 
-def output_name(first_file):
-    """Strip _sN from the filename to get the accumulated output name."""
+def parse_param(fname, handle):
+    """Extract `handle` from a filename containing _`handle`<N>_."""
+    m = re.search(rf"_{handle}(\d+.?\d*)[_.]", os.path.basename(fname))
+    if m is None:
+        raise ValueError(f"Could not find _L<N>_ in filename: {os.path.basename(fname)}")
+    return int(m.group(1))
+
+
+def output_name(first_file, n_merged):
+    """Strip _dsN and _msN seed tags, replacing with _mergeN."""
     base = os.path.basename(first_file)
-    out_base = re.sub(r"_s\d+", "", base)
+    out_base = re.sub(r"_ds\d+", f"_merge{n_merged}", base)
+    out_base = re.sub(r"_ms\d+", "", out_base)
     if out_base == base:
-        raise ValueError(f"Could not find _sN seed tag in filename: {base}")
+        raise ValueError(f"Could not find _dsN disorder-seed tag in filename: {base}")
     return os.path.join(os.path.dirname(first_file), out_base)
 
 
@@ -71,15 +80,18 @@ def main(fnames):
         n_spins_sum += n_spins
         n_seeds     += 1
 
-    out = output_name(fnames[0])
+    L = parse_param(fnames[0], "L")
+    volume = 16 * L**3
+
+    out = output_name(fnames[0], n_seeds)
     K = np.full(len(T_ref), n_seeds, dtype=np.uint64)
     with h5py.File(out, "w") as f:
         g = f.create_group("energy")
         g.create_dataset("T_list",    data=T_ref)
-        g.create_dataset("E",         data=e_sum)
-        g.create_dataset("E_sq",      data=e_sq_sum)
-        g.create_dataset("var",       data=var_sum)
-        g.create_dataset("var_sq",    data=var_sq_sum)
+        g.create_dataset("E",         data=e_sum / volume)
+        g.create_dataset("E_sq",      data=e_sq_sum / volume**2)
+        g.create_dataset("var",       data=var_sum / volume**2)
+        g.create_dataset("var_sq",    data=var_sq_sum / volume**4)
         g.create_dataset("n_samples", data=K)
         gg = f.create_group("geometry")
         gg.create_dataset("n_spins",  data=n_spins_sum / n_seeds)

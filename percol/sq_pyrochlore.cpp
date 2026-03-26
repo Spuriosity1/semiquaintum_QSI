@@ -26,14 +26,14 @@ using namespace std;
 std::string make_filename(
     int L,
     float p,
-    size_t seed,
+    size_t dseed,
+    size_t mseed,
     const std::string& prefix = "run",
     const std::string& ext = "dat")
 {
     std::ostringstream oss;
 
-
-    const auto& param = ModelParams::get(); 
+    const auto& param = ModelParams::get();
 
     oss << prefix
         << "_L" << L
@@ -41,7 +41,8 @@ std::string make_filename(
         << "_Jzz" << param.Jzz
         << "_Jxx" << param.Jxx
         << "_Jyy" << param.Jyy
-        << "_s" << seed
+        << "_ds" << dseed
+        << "_ms" << mseed
         << "." << ext;
 
     return oss.str();
@@ -82,10 +83,16 @@ int main (int argc, char *argv[]) {
         .implicit_value(true);
 /// BOOK-KEEPING
 
-    ap.add_argument("--seed", "-s")
-        .help("RNG seed")
+    ap.add_argument("--dseed", "-s")
+        .help("Disorder seed (controls which spins are deleted)")
         .default_value(static_cast<size_t>(0))
         .scan<'i', size_t>();
+    ap.add_argument("--mseed", "-m")
+        .help("MC RNG seed (controls thermal Monte Carlo trajectory)")
+        .default_value(static_cast<size_t>(0))
+        .scan<'i', size_t>();
+    ap.add_argument("--prefix")
+        .default_value("run");
     ap.add_argument("--output_dir", "-o")
         .help("Output directory (filenames automatically generated)")
         .required();
@@ -126,6 +133,10 @@ int main (int argc, char *argv[]) {
         .default_value(false)
         .implicit_value(true);
 
+    ap.add_argument("--moves")
+        .help("MC moves to attempt, any combination of R(ing) C(lassical) W(orm) M(onopole) B(oundary) Q(uantum). Default: all enabled.")
+        .default_value(std::string("RCWMBQ"));
+
     ap.add_argument("--verbosity", "-v")
         .help("Output verbosity: 0=silent, 1=normal, 2=+Q² spinon texture, 5=+cluster spectra")
         .default_value(1)
@@ -146,7 +157,8 @@ int main (int argc, char *argv[]) {
 
     int L = ap.get<int>("L");
     double p = ap.get<float>("p"); // site deletion probability
-    size_t seed = ap.get<size_t>("--seed");
+    size_t dseed = ap.get<size_t>("--dseed");
+    size_t mseed = ap.get<size_t>("--mseed");
     size_t nsweep = ap.get<size_t>("--nsweep");
     size_t nsamp = ap.get<size_t>("--nsamp");
     size_t nburn = ap.get<size_t>("--nburn");
@@ -154,13 +166,15 @@ int main (int argc, char *argv[]) {
     int  verbosity      = ap.get<int>("--verbosity");
 
     MCSettings params;
+    params.moves = parse_moves(ap.get<std::string>("--moves"));
 
 
     QClattice sc = initialise_lattice(L);
 
     // Delete about p*100% of the spins
     // (Bernoulli sample)
-    std::mt19937 rng(seed);
+    std::mt19937 rng(dseed);
+    params.rng.seed(mseed);
     std::unordered_set<Tetra*> seed_tetras;
     // Identify the quantum-cluster distribution
     MCStateMF state;
@@ -269,7 +283,8 @@ int main (int argc, char *argv[]) {
 
     std::filesystem::path out_dir = ap.get<std::string>("--output_dir");
     
-    auto file_path = out_dir/make_filename(L, p, seed, "run", "h5");
+    const std::string prefix  = ap.get<std::string>("--prefix");
+    auto file_path = out_dir/make_filename(L, p, dseed, mseed, prefix, "h5");
 
     hid_t file_id = H5Fcreate(file_path.string().c_str(), H5F_ACC_TRUNC, H5P_DEFAULT, H5P_DEFAULT);
     if (file_id < 0) {

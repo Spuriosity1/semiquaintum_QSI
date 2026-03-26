@@ -169,6 +169,128 @@ int try_flip_worm(MCSettings& mc, Spin* root) {
 }
 
 
+// Move 1c: monopole worm — move a monopole through the ice manifold.
+//
+// Searches for an "intact" tetrahedron with a non-zero charge
+// (Q = Σ ising_val ≠ 0, i.e. a monopole; intact = all 4 member spins non-deleted,
+// non-quantum).  Picks one at random as the worm tail, then walks an open, non-closed
+// path nose-to-tail using the same alternating heal_val rule as the zero-energy worm (1b):
+// at step k the chosen spin must have ising_val == heal_val to restore ice-rule at the
+// current head and propagate the charge to the next tetrahedron.
+//
+// The walk terminates when either
+//   (a) no nose-to-tail candidate exists at the current head (stuck in the lattice), or
+//   (b) the charge arriving at the new head cancels a pre-existing monopole there
+//       (Q_head = 0 after the flip — "annihilation"), giving ΔE ≈ 0 in the ice manifold.
+//
+// The whole path is accepted or rejected with a single Metropolis step on the total
+// accumulated ΔE (classical Jzz bonds + quantum eigenvalue shift via tentative
+// re-diagonalisation of any touched QClusterMF).
+int try_flip_monopole_worm(MCSettings& mc, const std::vector<Tetra*>& intact_tetras) {
+    // Pick a random intact tetrahedron that currently carries a monopole charge.
+    // intact_tetras is fixed at dilution time (all 4 members present and classical);
+    // only Q = Σ ising_val changes dynamically, so we scan the pre-built list.
+    if (intact_tetras.empty()) return 0;
+
+    std::vector<int> idx(intact_tetras.size());
+    std::iota(idx.begin(), idx.end(), 0);
+    std::shuffle(idx.begin(), idx.end(), mc.rng);
+
+    Tetra* tail_tetra = nullptr;
+    int q_tail = 0;
+    for (auto i : idx) {
+        Tetra* t = intact_tetras[i];
+        int q = 0;
+        for (Spin* s : t->member_spins) q += s->ising_val;
+        if (q != 0) { tail_tetra = t; q_tail = q; break; }
+    }
+    if (tail_tetra == nullptr) return 0;
+
+    // heal_val for the first step matches sign(Q_tail): flipping a spin with
+    // ising_val == heal_val moves the charge out of tail_tetra (Q_tail → 0 if |Q|=2)
+    // and creates a charge of opposite sign in the next tetrahedron.
+    int heal_val = (q_tail > 0) ? +1 : -1; // majority spin type
+
+    std::vector<Spin*> path;
+    Tetra* head = tail_tetra;
+    Spin* prev_spin  = nullptr;
+    int q_head = q_tail;   // charge at the current head; updated inside loop
+    const int target_length = std::poisson_distribution<int>(10)(mc.rng);
+
+    while ((int)path.size() < target_length) {
+        // nose-to-tail candidates: non-deleted, non-quantum spins in head with
+        // ising_val == heal_val (not the spin we just came through)
+        std::vector<Spin*> candidates;
+        for (Spin* s : head->member_spins) {
+            if (s == prev_spin || s->deleted || s->is_quantum()) continue;
+            if (s->ising_val == heal_val) candidates.push_back(s);
+        }
+        if (candidates.empty()) break;   // stuck — accept/reject current path
+
+        Spin* next_spin = candidates[
+            std::uniform_int_distribution<int>(0, (int)candidates.size() - 1)(mc.rng)
+        ];
+        Tetra* next_head = (next_spin->owning_tetras[0] == head)
+                            ? next_spin->owning_tetras[1]
+                            : next_spin->owning_tetras[0];
+        if (!next_head) break;
+
+        next_spin->ising_val *= -1;
+        path.push_back(next_spin);
+        prev_spin = next_spin;
+        head      = next_head;
+        heal_val  = -heal_val;
+
+        // Annihilation: if the flip brought Q_head to 0, path terminates here.
+        // The move costs zero energy in a pure ice background; Metropolis handles the rest.
+        q_head = 0;
+        for (Spin* s : head->member_spins)
+            if (!s->deleted && !s->is_quantum()) q_head += s->ising_val;
+        if (q_head == 0) break;
+    }
+
+    if (path.empty()) return 0;
+
+
+    // ΔE is purely from head and tail tetras (all intermediate tetras return to ice rule).
+    // Using sigma convention: E(tetra) = Jzz/2 * (Q²-4), so ΔE = Jzz/2 * ΔQ²
+    const double Jzz = ModelParams::get().Jzz;
+    int Q_tail_final = 0;
+    for (Spin* s : tail_tetra->member_spins) Q_tail_final += s->ising_val;
+    // q_head is current charge at head; undo the last flip to get initial charge
+    int Q_head_initial = q_head - 2 * path.back()->ising_val;
+    double dE = (Jzz / 2.0) * (
+        (double)(Q_tail_final * Q_tail_final - q_tail * q_tail) +
+        (double)(q_head * q_head - Q_head_initial * Q_head_initial)
+    );
+
+    // --- Metropolis ---
+    int accept = mc.uniform(mc.rng) < std::exp(-mc.beta * (dE));
+    if (!accept) {
+        for (Spin* s : path) s->ising_val *= -1;
+        return 0;
+    }
+
+
+    // Update boundary configs of any quantum clusters adjacent to flipped spins.
+    std::unordered_set<QClusterMF*> touched;
+    for (Spin* s : path)
+        for (Spin* nb : s->neighbours)
+            if (!nb->deleted && nb->is_quantum() && nb->owning_cluster)
+                touched.insert(static_cast<QClusterMF*>(nb->owning_cluster));
+    for (QClusterMF* qc : touched) {
+        QClusterMF::BoundaryConfig new_cfg = 0;
+        for (int i = 0; i < (int)qc->classical_boundary_spins.size(); i++)
+            if (qc->classical_boundary_spins[i]->ising_val == +1)
+                new_cfg |= (1u << i);
+        qc->diagonalise(new_cfg);
+    }
+
+
+    return 1;
+}
+
+
 // Move 2 (QCluster): propose a uniformly random new eigenstate within a cluster.
 // The boundary config (and therefore the spectrum) is unchanged; only eigenstate_idx moves.
 // ΔE = eigenvalues[new] − eigenvalues[old].  Metropolis accept.
@@ -572,32 +694,53 @@ void MCStateMF::partition_spins(std::vector<Spin>& spins) {
     this->boundary_spins.reserve(boundary_spin_set.size());
     for (auto s : boundary_spin_set)
         this->boundary_spins.push_back(s);
+
+    // Build the static list of fully-classical tetrahedra (intact = no deleted or quantum
+    // member spins).  Q values change during the simulation but intact status does not.
+    std::unordered_set<Tetra*> seen_tetras;
+    for (Spin* s : classical_spins) {
+        for (Tetra* t : s->owning_tetras) {
+            if (!t || !seen_tetras.insert(t).second) continue;
+            bool intact = true;
+            for (Spin* m : t->member_spins)
+                if (m->deleted || m->is_quantum()) { intact = false; break; }
+            if (intact) intact_tetras.push_back(t);
+        }
+    }
 }
 
 
 template<bool UseExactBoundary>
 void MCStateMF::sweep(MCSettings& mc_) {
     mc_.sweeps_attempted++;
-    for (auto p : intact_plaqs) {
-        mc_.accepted_plaq += try_flip_ring(p);
+    if (mc_.moves & MOVE_RING) {
+        for (auto p : intact_plaqs)
+            mc_.accepted_plaq += try_flip_ring(p);
     }
-    for (auto s : classical_spins) {
-        mc_.accepted_classical += try_flip_classical(mc_, s);
+    if (mc_.moves & MOVE_CLASSICAL) {
+        for (auto s : classical_spins)
+            mc_.accepted_classical += try_flip_classical(mc_, s);
     }
-
-    auto s = classical_spins[
-        std::uniform_int_distribution<int>(0, (int)classical_spins.size()-1)(mc_.rng)
-    ];
-    mc_.accepted_worm += try_flip_worm(mc_, s);
-
-    for (auto s : boundary_spins) {
-        if constexpr (UseExactBoundary)
-            mc_.accepted_boundary += try_flip_boundary_spin_MF_exact(mc_, s);
-        else
-            mc_.accepted_boundary += try_flip_boundary_spin_MF(mc_, s);
+    if (mc_.moves & MOVE_WORM) {
+        auto s = classical_spins[
+            std::uniform_int_distribution<int>(0, (int)classical_spins.size()-1)(mc_.rng)
+        ];
+        mc_.accepted_worm += try_flip_worm(mc_, s);
     }
-    for (auto& qc : clusters) {
-        mc_.accepted_quantum += try_flip_cluster_state_MF(mc_, qc);
+    if (mc_.moves & MOVE_MONOPOLE) {
+        mc_.accepted_monopole += try_flip_monopole_worm(mc_, intact_tetras);
+    }
+    if (mc_.moves & MOVE_BOUNDARY) {
+        for (auto s : boundary_spins) {
+            if constexpr (UseExactBoundary)
+                mc_.accepted_boundary += try_flip_boundary_spin_MF_exact(mc_, s);
+            else
+                mc_.accepted_boundary += try_flip_boundary_spin_MF(mc_, s);
+        }
+    }
+    if (mc_.moves & MOVE_QUANTUM) {
+        for (auto& qc : clusters)
+            mc_.accepted_quantum += try_flip_cluster_state_MF(mc_, qc);
     }
 }
 
