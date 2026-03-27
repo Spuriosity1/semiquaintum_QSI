@@ -236,9 +236,6 @@ int main (int argc, char *argv[]) {
         sm.new_T(T);
         params.beta /= factor;
 
-        params.moves = (T < ModelParams::get().Jzz) ?
-            MoveFlags::MOVE_ALL : MoveFlags::MOVE_HIGH_T;
-        
         for (size_t n=0; n<nburn; n++){
             if (exact_boundary) state.sweep<true>(params);
             else                state.sweep<false>(params);
