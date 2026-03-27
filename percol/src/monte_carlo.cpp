@@ -254,7 +254,7 @@ int try_flip_monopole_worm(MCSettings& mc, Tetra*tail_tetra, double target_lengt
     int Q_tail_proposed = tetra_charge(tail_tetra);
     // q_head is current charge at head; undo the last flip to get initial charge
     int Q_head_proposed = tetra_charge(head_tetra);
-    int Q_head_initial =  - 2 * path.back()->ising_val;
+    int Q_head_initial = Q_head_proposed - 2 * path.back()->ising_val;
     double dE = (Jzz / 2.0) * (
         (double)(Q_tail_proposed * Q_tail_proposed - q_tail * q_tail) +
         (double)(Q_head_proposed * Q_head_proposed - Q_head_initial * Q_head_initial)
