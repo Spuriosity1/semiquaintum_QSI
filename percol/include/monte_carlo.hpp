@@ -28,6 +28,7 @@ enum MoveFlags : uint32_t {
     MOVE_BOUNDARY  = 1u << 4,  // B: boundary-spin flip
     MOVE_QUANTUM   = 1u << 5,  // Q: cluster eigenstate resample
     MOVE_ALL       = ~0u,
+    MOVE_HIGH_T    = MOVE_CLASSICAL | MOVE_QUANTUM | MOVE_BOUNDARY
 };
 
 inline MoveFlags parse_moves(const std::string& s) {
@@ -61,6 +62,7 @@ struct MCSettings {
     double accepted_worm=0;
     double accepted_monopole=0;
 
+    size_t attempted_monopole;
     size_t sweeps_attempted=0;
 
     void reset_acceptance(){
@@ -113,6 +115,7 @@ struct MCStateMF {
     std::vector<Spin*>    boundary_spins;  // type 3
     std::vector<Tetra*>   intact_tetras;   // fully-classical tetras (fixed after dilution)
     std::vector<QClusterMF> clusters;
+
 
     void partition_spins(std::vector<Spin>& spins);
 

@@ -133,6 +133,11 @@ int main (int argc, char *argv[]) {
         .default_value(false)
         .implicit_value(true);
 
+    ap.add_argument("--classical")
+        .help("Skip quantum cluster identification — treat all spins as classical (benchmarking)")
+        .default_value(false)
+        .implicit_value(true);
+
     ap.add_argument("--moves")
         .help("MC moves to attempt, any combination of R(ing) C(lassical) W(orm) M(onopole) B(oundary) Q(uantum). Default: all enabled.")
         .default_value(std::string("RCWMBQ"));
@@ -163,6 +168,7 @@ int main (int argc, char *argv[]) {
     size_t nsamp = ap.get<size_t>("--nsamp");
     size_t nburn = ap.get<size_t>("--nburn");
     bool exact_boundary = !ap.get<bool>("--mf_boundary");
+    bool classical_only = ap.get<bool>("--classical");
     int  verbosity      = ap.get<int>("--verbosity");
 
     MCSettings params;
@@ -181,13 +187,11 @@ int main (int argc, char *argv[]) {
     MCStateMF state;
 
     delete_spins(rng, sc, p, seed_tetras);
-    identify_1o_clusters(seed_tetras, state.clusters);
+    if (!classical_only)
+        identify_1o_clusters(seed_tetras, state.clusters);
     identify_flippable_hexas(sc, state.intact_plaqs);
 
-    // initialise the clusters
-    for (auto& qc : state.clusters){
-        qc.initialise();
-    }
+    for (auto& qc : state.clusters) qc.initialise();
 
     // Partitions spins into boundary, cluster and neighbour
     state.partition_spins(sc.get_objects<Spin>());
@@ -223,12 +227,17 @@ int main (int argc, char *argv[]) {
 
     static constexpr const char* Q2_labels[4] = {"complete", "triangle", "line", "dangling"};
 
+    /////////////////////////////////////////////////////////////////////////
+    /// MAIN EXECUTION LOOP /////////////////////
+    
     for (size_t i=0; i<n_step; i++){
         const double T = 1./params.beta;
         em.new_T(T);
         sm.new_T(T);
         params.beta /= factor;
 
+        params.moves = (T < ModelParams::get().Jzz) ?
+            MoveFlags::MOVE_ALL : MoveFlags::MOVE_HIGH_T;
         
         for (size_t n=0; n<nburn; n++){
             if (exact_boundary) state.sweep<true>(params);
@@ -246,10 +255,11 @@ int main (int argc, char *argv[]) {
         }
 
         if (verbosity >= 1) {
-            params.accepted_plaq     /= state.intact_plaqs.size();
-            params.accepted_classical /= state.classical_spins.size();
-            params.accepted_quantum  /= state.clusters.size();
-            params.accepted_boundary /= state.boundary_spins.size();
+            if (!state.intact_plaqs.empty())   params.accepted_plaq     /= state.intact_plaqs.size();
+            if (!state.classical_spins.empty()) params.accepted_classical /= state.classical_spins.size();
+            if (!state.clusters.empty())        params.accepted_quantum   /= state.clusters.size();
+            if (!state.boundary_spins.empty())  params.accepted_boundary  /= state.boundary_spins.size();
+            if (params.attempted_monopole > 0)  params.accepted_monopole  /= params.attempted_monopole;
 
             std::cout << std::setprecision(6) << "T = " << T
                       << "\tE = " << em.curr_E()

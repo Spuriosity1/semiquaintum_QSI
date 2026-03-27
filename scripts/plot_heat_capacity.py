@@ -27,11 +27,11 @@ def load_E_data(fname):
     """
     Returns T, E_mean, var_mean, se_E, se_C_raw.
 
-    For accumulated files (produced by acc_heat_capacity):
+    For accumulated files (MC and disorder avg), ending in .davg.h5:
       - var_mean = ⟨Var_k(E)⟩_disorder  (= ⟨C⟩ · T²)
       - se_E, se_C_raw computed from inter-seed scatter via Bessel-corrected std / √K
 
-    For single-seed files:
+    For single-trial files:
       - var_mean = Var(E) = E2/n − (E/n)²
       - se_E = √(var/n)
       - se_C_raw = None  (higher moments not stored)
@@ -39,13 +39,12 @@ def load_E_data(fname):
     with h5py.File(fname, "r") as f:
         g = f["/energy"]
         assert isinstance(g, h5py.Group)
-        T     = np.array(g["T_list"])
-        E     = np.array(g["E"])
-        nsamp = np.array(g["n_samples"])
+        T = np.array(g["T_list"])
+        E = np.array(g["E"])
 
         if "var" in g:
-            # --- accumulated file ---
-            K        = nsamp.astype(float)
+            # --- disorder-averaged file ---
+            K        = np.array(g["n_disorder"]).astype(float)
             var_sum  = np.array(g["var"])
             var_sq   = np.array(g["var_sq"])
             e_sq     = np.array(g["E_sq"])
@@ -65,12 +64,24 @@ def load_E_data(fname):
             return T, E_mean, var_mean, se_E, se_C_times_T2
 
         else:
-            # --- single-seed file ---
+            # --- per-disorder (or raw single-seed) file ---
             E2     = np.array(g["E2"])
+            nsamp  = np.array(g["n_samples"])
             E_mean = E / nsamp
             var    = E2 / nsamp - E_mean**2
             se_E   = np.sqrt(np.maximum(var, 0) / nsamp)
-            return T, E_mean, var, se_E, None
+
+            se_C_times_T2 = None
+            if "var_sq" in g and "n_mc_seeds" in g:
+                K      = float(np.array(g["n_mc_seeds"]))
+                var_sq = np.array(g["var_sq"])
+                # Bessel-corrected SE on the mean of K per-seed variance estimates
+                se_C_times_T2 = np.where(
+                    K > 1,
+                    np.sqrt(np.maximum(var_sq - K * var**2, 0) / (K * (K - 1))),
+                    np.nan,
+                )
+            return T, E_mean, var, se_E, se_C_times_T2
 
 
 def plot_file(fname, axes, color, label):

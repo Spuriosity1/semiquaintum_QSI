@@ -168,6 +168,22 @@ int try_flip_worm(MCSettings& mc, Spin* root) {
     return 1;  // loop closed, all flips committed
 }
 
+// NB does NOT include usual sublattice factor
+int tetra_charge(const Tetra* t){
+    int q = 0;
+    for (Spin* s : t->member_spins) q += s->ising_val;
+    return q;
+}
+
+// filters out a list of tetras with monopoles on them
+std::vector<Tetra*> find_monopole_tetras(const std::vector<Tetra*>& intact_tetras){
+    std::vector<Tetra*> retval;
+    for (auto t : intact_tetras) {
+        if (tetra_charge(t) != 0) { retval.push_back(t); }
+    }
+    return retval;
+}
+
 
 // Move 1c: monopole worm — move a monopole through the ice manifold.
 //
@@ -186,42 +202,28 @@ int try_flip_worm(MCSettings& mc, Spin* root) {
 // The whole path is accepted or rejected with a single Metropolis step on the total
 // accumulated ΔE (classical Jzz bonds + quantum eigenvalue shift via tentative
 // re-diagonalisation of any touched QClusterMF).
-int try_flip_monopole_worm(MCSettings& mc, const std::vector<Tetra*>& intact_tetras) {
-    // Pick a random intact tetrahedron that currently carries a monopole charge.
+int try_flip_monopole_worm(MCSettings& mc, Tetra*tail_tetra, double target_length_mean=10) {
+    // For all intact tetrahedra that currently carry a monopole charge, try to move them
     // intact_tetras is fixed at dilution time (all 4 members present and classical);
     // only Q = Σ ising_val changes dynamically, so we scan the pre-built list.
-    if (intact_tetras.empty()) return 0;
-
-    std::vector<int> idx(intact_tetras.size());
-    std::iota(idx.begin(), idx.end(), 0);
-    std::shuffle(idx.begin(), idx.end(), mc.rng);
-
-    Tetra* tail_tetra = nullptr;
-    int q_tail = 0;
-    for (auto i : idx) {
-        Tetra* t = intact_tetras[i];
-        int q = 0;
-        for (Spin* s : t->member_spins) q += s->ising_val;
-        if (q != 0) { tail_tetra = t; q_tail = q; break; }
-    }
-    if (tail_tetra == nullptr) return 0;
+    int q_tail = tetra_charge(tail_tetra);
+    if (q_tail == 0) return 0; // refuse
 
     // heal_val for the first step matches sign(Q_tail): flipping a spin with
     // ising_val == heal_val moves the charge out of tail_tetra (Q_tail → 0 if |Q|=2)
     // and creates a charge of opposite sign in the next tetrahedron.
-    int heal_val = (q_tail > 0) ? +1 : -1; // majority spin type
+    int heal_val = (q_tail > 0) ? +1 : -1; // majority spin type, flippable type
 
     std::vector<Spin*> path;
-    Tetra* head = tail_tetra;
+    Tetra* head_tetra = tail_tetra;
     Spin* prev_spin  = nullptr;
-    int q_head = q_tail;   // charge at the current head; updated inside loop
-    const int target_length = std::poisson_distribution<int>(10)(mc.rng);
+    const int target_length = std::poisson_distribution<int>(target_length_mean)(mc.rng);
 
     while ((int)path.size() < target_length) {
         // nose-to-tail candidates: non-deleted, non-quantum spins in head with
         // ising_val == heal_val (not the spin we just came through)
         std::vector<Spin*> candidates;
-        for (Spin* s : head->member_spins) {
+        for (Spin* s : head_tetra->member_spins) {
             if (s == prev_spin || s->deleted || s->is_quantum()) continue;
             if (s->ising_val == heal_val) candidates.push_back(s);
         }
@@ -230,23 +232,17 @@ int try_flip_monopole_worm(MCSettings& mc, const std::vector<Tetra*>& intact_tet
         Spin* next_spin = candidates[
             std::uniform_int_distribution<int>(0, (int)candidates.size() - 1)(mc.rng)
         ];
-        Tetra* next_head = (next_spin->owning_tetras[0] == head)
+        Tetra* next_head = (next_spin->owning_tetras[0] == head_tetra)
                             ? next_spin->owning_tetras[1]
                             : next_spin->owning_tetras[0];
-        if (!next_head) break;
+        assert(next_head);
 
         next_spin->ising_val *= -1;
         path.push_back(next_spin);
         prev_spin = next_spin;
-        head      = next_head;
+        head_tetra      = next_head;
         heal_val  = -heal_val;
 
-        // Annihilation: if the flip brought Q_head to 0, path terminates here.
-        // The move costs zero energy in a pure ice background; Metropolis handles the rest.
-        q_head = 0;
-        for (Spin* s : head->member_spins)
-            if (!s->deleted && !s->is_quantum()) q_head += s->ising_val;
-        if (q_head == 0) break;
     }
 
     if (path.empty()) return 0;
@@ -255,13 +251,13 @@ int try_flip_monopole_worm(MCSettings& mc, const std::vector<Tetra*>& intact_tet
     // ΔE is purely from head and tail tetras (all intermediate tetras return to ice rule).
     // Using sigma convention: E(tetra) = Jzz/2 * (Q²-4), so ΔE = Jzz/2 * ΔQ²
     const double Jzz = ModelParams::get().Jzz;
-    int Q_tail_final = 0;
-    for (Spin* s : tail_tetra->member_spins) Q_tail_final += s->ising_val;
+    int Q_tail_proposed = tetra_charge(tail_tetra);
     // q_head is current charge at head; undo the last flip to get initial charge
-    int Q_head_initial = q_head - 2 * path.back()->ising_val;
+    int Q_head_proposed = tetra_charge(head_tetra);
+    int Q_head_initial =  - 2 * path.back()->ising_val;
     double dE = (Jzz / 2.0) * (
-        (double)(Q_tail_final * Q_tail_final - q_tail * q_tail) +
-        (double)(q_head * q_head - Q_head_initial * Q_head_initial)
+        (double)(Q_tail_proposed * Q_tail_proposed - q_tail * q_tail) +
+        (double)(Q_head_proposed * Q_head_proposed - Q_head_initial * Q_head_initial)
     );
 
     // --- Metropolis ---
@@ -285,7 +281,6 @@ int try_flip_monopole_worm(MCSettings& mc, const std::vector<Tetra*>& intact_tet
                 new_cfg |= (1u << i);
         qc->diagonalise(new_cfg);
     }
-
 
     return 1;
 }
@@ -728,7 +723,13 @@ void MCStateMF::sweep(MCSettings& mc_) {
         mc_.accepted_worm += try_flip_worm(mc_, s);
     }
     if (mc_.moves & MOVE_MONOPOLE) {
-        mc_.accepted_monopole += try_flip_monopole_worm(mc_, intact_tetras);
+        auto monopoles = find_monopole_tetras(intact_tetras);
+        mc_.attempted_monopole=monopoles.size();
+        // guess the length to go for: L / n_mon^1/3
+        double monopole_mfp = pow(classical_spins.size()/monopoles.size(),1./3);
+        for (auto& t : monopoles){
+            mc_.accepted_monopole += try_flip_monopole_worm(mc_, t, monopole_mfp);
+        }
     }
     if (mc_.moves & MOVE_BOUNDARY) {
         for (auto s : boundary_spins) {
