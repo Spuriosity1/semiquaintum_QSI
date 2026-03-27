@@ -173,8 +173,9 @@ int main (int argc, char *argv[]) {
 
     // Delete about p*100% of the spins
     // (Bernoulli sample)
-    std::mt19937 rng(dseed);
-    params.rng.seed(mseed);
+    auto hashf = std::hash<size_t>();
+    std::mt19937 rng(hashf(dseed));
+    params.rng.seed(hashf(mseed ^ (dseed * 105 ) ) );
     std::unordered_set<Tetra*> seed_tetras;
     // Identify the quantum-cluster distribution
     MCStateMF state;
