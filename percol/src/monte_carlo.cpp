@@ -202,7 +202,7 @@ std::vector<Tetra*> find_monopole_tetras(const std::vector<Tetra*>& intact_tetra
 // The whole path is accepted or rejected with a single Metropolis step on the total
 // accumulated ΔE (classical Jzz bonds + quantum eigenvalue shift via tentative
 // re-diagonalisation of any touched QClusterMF).
-int try_flip_monopole_worm(MCSettings& mc, Tetra*tail_tetra, double target_length_mean=10) {
+int try_flip_monopole_worm(MCSettings& mc, Tetra*tail_tetra, double target_length_mean) {
     // For all intact tetrahedra that currently carry a monopole charge, try to move them
     // intact_tetras is fixed at dilution time (all 4 members present and classical);
     // only Q = Σ ising_val changes dynamically, so we scan the pre-built list.
@@ -247,6 +247,20 @@ int try_flip_monopole_worm(MCSettings& mc, Tetra*tail_tetra, double target_lengt
 
     if (path.empty()) return 0;
 
+    // If the final head contains a quantum spin, the last flip is an uncompensated
+    // boundary-config change whose energy we don't include in dE.  Backtrack one step.
+    for (Spin* m : head_tetra->member_spins) {
+        if (m->is_quantum()) {
+            path.back()->ising_val *= -1;
+            Tetra* prev = (path.back()->owning_tetras[0] == head_tetra)
+                            ? path.back()->owning_tetras[1]
+                            : path.back()->owning_tetras[0];
+            path.pop_back();
+            head_tetra = prev;
+            if (path.empty()) return 0;
+            break;
+        }
+    }
 
     // ΔE is purely from head and tail tetras (all intermediate tetras return to ice rule).
     // Using sigma convention: E(tetra) = Jzz/2 * (Q²-4), so ΔE = Jzz/2 * ΔQ²
@@ -254,7 +268,7 @@ int try_flip_monopole_worm(MCSettings& mc, Tetra*tail_tetra, double target_lengt
     int Q_tail_proposed = tetra_charge(tail_tetra);
     // q_head is current charge at head; undo the last flip to get initial charge
     int Q_head_proposed = tetra_charge(head_tetra);
-    int Q_head_initial =  - 2 * path.back()->ising_val;
+    int Q_head_initial = Q_head_proposed - 2 * path.back()->ising_val;
     double dE = (Jzz / 2.0) * (
         (double)(Q_tail_proposed * Q_tail_proposed - q_tail * q_tail) +
         (double)(Q_head_proposed * Q_head_proposed - Q_head_initial * Q_head_initial)
@@ -269,17 +283,31 @@ int try_flip_monopole_worm(MCSettings& mc, Tetra*tail_tetra, double target_lengt
 
 
     // Update boundary configs of any quantum clusters adjacent to flipped spins.
+    // The worm is a purely classical move: the quantum cluster should follow
+    // adiabatically — staying on the eigenstate whose energy is closest to its
+    // pre-worm energy in the new Hamiltonian (adiabatic following).
     std::unordered_set<QClusterMF*> touched;
     for (Spin* s : path)
         for (Spin* nb : s->neighbours)
             if (!nb->deleted && nb->is_quantum() && nb->owning_cluster)
                 touched.insert(static_cast<QClusterMF*>(nb->owning_cluster));
     for (QClusterMF* qc : touched) {
+        const double E_old = qc->energy();   // eigenvalue before boundary change
+
         QClusterMF::BoundaryConfig new_cfg = 0;
         for (int i = 0; i < (int)qc->classical_boundary_spins.size(); i++)
             if (qc->classical_boundary_spins[i]->ising_val == +1)
                 new_cfg |= (1u << i);
         qc->diagonalise(new_cfg);
+
+        // Find eigenstate in new basis with energy closest to E_old.
+        int best_idx = 0;
+        double best_dist = std::abs(qc->eigenvalues[0] - E_old);
+        for (int n = 1; n < (int)qc->eigenvalues.size(); n++) {
+            double d = std::abs(qc->eigenvalues[n] - E_old);
+            if (d < best_dist) { best_dist = d; best_idx = n; }
+        }
+        qc->eigenstate_idx = best_idx;
     }
 
     return 1;
@@ -690,8 +718,18 @@ void MCStateMF::partition_spins(std::vector<Spin>& spins) {
     for (auto s : boundary_spin_set)
         this->boundary_spins.push_back(s);
 
+    find_intact_tetras(classical_spins, intact_tetras);
+}
+
+
+
+void find_intact_tetras(const std::vector<Spin*>& classical_spins,
+        std::vector<Tetra*>& intact_tetras)
+{
+
     // Build the static list of fully-classical tetrahedra (intact = no deleted or quantum
     // member spins).  Q values change during the simulation but intact status does not.
+    intact_tetras.resize(0);
     std::unordered_set<Tetra*> seen_tetras;
     for (Spin* s : classical_spins) {
         for (Tetra* t : s->owning_tetras) {
@@ -724,11 +762,13 @@ void MCStateMF::sweep(MCSettings& mc_) {
     }
     if (mc_.moves & MOVE_MONOPOLE) {
         auto monopoles = find_monopole_tetras(intact_tetras);
-        mc_.attempted_monopole=monopoles.size();
-        // guess the length to go for: L / n_mon^1/3
-        double monopole_mfp = pow(classical_spins.size()/monopoles.size(),1./3);
-        for (auto& t : monopoles){
-            mc_.accepted_monopole += try_flip_monopole_worm(mc_, t, monopole_mfp);
+        if (!monopoles.empty()) {
+            mc_.attempted_monopole += monopoles.size();
+            // guess the length to go for: (N_classical / N_mon)^(1/3) ~ mean free path
+            double monopole_mfp = std::pow(
+                (double)classical_spins.size() / monopoles.size(), 1.0/3.0);
+            for (auto& t : monopoles)
+                mc_.accepted_monopole += try_flip_monopole_worm(mc_, t, monopole_mfp);
         }
     }
     if (mc_.moves & MOVE_BOUNDARY) {
