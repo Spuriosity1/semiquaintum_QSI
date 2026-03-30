@@ -12,6 +12,8 @@
 //   A. classical_bond_energy()   — used by try_flip_classical (type-4 spins)
 //   B. boundary-flip exact dE   — replicates try_flip_boundary_spin_MF_exact
 //   C. cluster eigenstate dE    — replicates try_flip_cluster_state_MF
+//   D. try_flip_ring             — cluster state consistent with spin config after ring flip
+//   E. try_flip_worm             — cluster state consistent with spin config after worm move
 //
 // Returns 0 on pass, 1 on any failure.
 
@@ -20,6 +22,9 @@
 #include <iostream>
 #include <iomanip>
 #include <cmath>
+
+// try_flip_ring is not exposed in monte_carlo.hpp (no MCSettings arg).
+int try_flip_ring(Plaq*);
 
 // Replicate the static mf_interaction() from monte_carlo.cpp.
 // Returns Jzz * sum_{bonds} <Sz_i>_n * <Sz_j>_{other eigenstate}
@@ -254,6 +259,77 @@ int main(int argc, char** argv) {
                     const double E_after = state.energy();
                     qc.eigenstate_idx = old_idx;  // restore
                     check("C: eigenstate change", dE_pred, E_after - E_before);
+                }
+            }
+
+            // Helper: save/restore full spin configuration.
+            auto save_spins = [&]() {
+                std::vector<int> v;
+                for (auto& s : sc.get_objects<Spin>()) v.push_back(s.ising_val);
+                return v;
+            };
+            auto restore_spins = [&](const std::vector<int>& v) {
+                int k = 0;
+                for (auto& s : sc.get_objects<Spin>()) s.ising_val = v[k++];
+                resync_clusters();
+            };
+
+            // ----------------------------------------------------------------
+            // CHECK D: try_flip_ring cluster consistency
+            //
+            // Forces each intact plaquette into the alternating ±1 state, then
+            // calls try_flip_ring.  Verifies that state.energy() computed from
+            // the cluster state written by try_flip_ring equals the energy from
+            // a full resync — i.e., the cluster update is self-consistent.
+            // ----------------------------------------------------------------
+            {
+                const auto spin_backup = save_spins();
+                for (Plaq* p : state.intact_plaqs) {
+                    // Force alternating ising values on the 6 ring spins.
+                    for (int i = 0; i < 6; i++)
+                        p->member_spins[i]->ising_val = (i % 2 == 0) ? +1 : -1;
+                    resync_clusters();
+
+                    const int flipped = try_flip_ring(p);
+                    if (!flipped) { restore_spins(spin_backup); continue; }
+
+                    const double E_stored = state.energy();
+                    resync_clusters();
+                    const double E_true = state.energy();
+                    if (!check("D: ring cluster consistency", E_true, E_stored)) {
+                        std::cerr << "  intact_plaqs size=" << state.intact_plaqs.size()
+                                  << "  clusters=" << state.clusters.size() << "\n";
+                    }
+                    restore_spins(spin_backup);
+                }
+            }
+
+            // ----------------------------------------------------------------
+            // CHECK E: try_flip_worm cluster consistency
+            //
+            // Attempts a worm move from each classical spin root.  When the
+            // worm closes (accepted), verifies that state.energy() from the
+            // cluster state written by try_flip_worm equals the energy from a
+            // full resync.
+            // ----------------------------------------------------------------
+            {
+                MCSettings mc_worm;
+                mc_worm.beta = 1.0;
+                mc_worm.rng  = std::mt19937(seed ^ 0xDEADBEEFu);
+
+                const auto spin_backup = save_spins();
+                for (Spin* s : state.classical_spins) {
+                    const int accepted = try_flip_worm(mc_worm, s);
+                    if (!accepted) continue;
+
+                    const double E_stored = state.energy();
+                    resync_clusters();
+                    const double E_true = state.energy();
+                    if (!check("E: worm cluster consistency", E_true, E_stored)) {
+                        std::cerr << "  classical_spins=" << state.classical_spins.size()
+                                  << "  clusters=" << state.clusters.size() << "\n";
+                    }
+                    restore_spins(spin_backup);
                 }
             }
         }
