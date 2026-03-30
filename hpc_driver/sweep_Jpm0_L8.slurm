@@ -14,7 +14,7 @@
 #SBATCH --output=hpc_driver/track/c_sweep.%A_%a.out
 #SBATCH --error=hpc_driver/track/c_sweep.%A_%a.error
 #SBATCH --chdir=/scratch/alaric/semiquaintum_QSI
-#SBATCH --array=0-128
+#SBATCH --array=0-1024
 ##SBATCH --constraint='uarch:x86-64-v3|uarch:x86-64-v4'
 
 . /etc/profile.d/modules.sh                # Leave this line (enables the module command)
@@ -51,7 +51,7 @@ echo "Current directory: `pwd`"
 
 L=8
 DILUTION=0.05
-Jzz=0.25 
+Jzz=1.0
 Jxx=0.0
 Jyy=0.0
 N_DISORDER_REALISATIONS=8
@@ -62,6 +62,6 @@ ds=$(( $SLURM_ARRAY_TASK_ID % $N_DISORDER_REALISATIONS ))
 ms=$(( $SLURM_ARRAY_TASK_ID / $N_DISORDER_REALISATIONS ))
 
 # disorder realisation
-CMD="$EXE_DIR/sq_pyrochlore $L $DILUTION -o $OUT_PATH --Thot 100 --Tcold 0.01 --Jzz $Jzz --Jxx $Jxx --Jyy $Jyy --nsweep 256 --nburn 16 -s $ds -m $ms"
+CMD="$EXE_DIR/sq_pyrochlore $L $DILUTION -o $OUT_PATH --Thot 100 --Tcold 0.01 --Jzz $Jzz --Jxx $Jxx --Jyy $Jyy --nsweep 256 --nburn 16 -s $ds -m $ms --moves CQB"
 echo "$CMD"
 $CMD
