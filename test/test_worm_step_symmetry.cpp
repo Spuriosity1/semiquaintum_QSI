@@ -1,36 +1,34 @@
 // test_worm_step_symmetry.cpp
 //
-// Tests the following property of the quantum clusters:
+// Tests the following symmetry property of quantum clusters adjacent to a
+// closed-worm (hexagonal ring) update:
 //
-//   Given any two non-quantum spins (si, sj) belonging to the same tetrahedron
-//   with opposite ising_vals — exactly the situation that occurs at each step of
-//   a closed worm (heal_val alternates, so the spin entering and the spin
-//   leaving a tetrahedron carry opposite signs) — flipping both spins
-//   simultaneously should leave the spectrum of every adjacent quantum cluster
-//   such that it is possible to choose a new eigenstate index satisfying:
+//   When all 6 spins of a pyrochlore hexagonal plaquette are simultaneously
+//   flipped (the ring-worm move), every quantum cluster that has one or more
+//   of those spins as a classical boundary spin must admit a new eigenstate
+//   index such that
 //
-//     (a) E_new == E_old  (energy exactly preserved)
-//     (b) <Sz_k>_new == <Sz_k>_old  for every cluster site k that couples to
-//         an *uninvolved* boundary spin (i.e. a classical_boundary_spin of the
-//         cluster that is neither si nor sj).
+//     (a) its energy exactly equals the cluster's energy before the flip, and
+//     (b) <Sz_k>_new == <Sz_k>_old for every cluster site k that couples
+//         to an *uninvolved* boundary spin (a classical_boundary_spin not in
+//         the hexagonal ring).
 //
-// This guarantees that the closed worm can include boundary spins without
-// changing either (a) the worm's own energy or (b) the effective field that
-// uninvolved boundary spins experience from the cluster, keeping inter-cluster
-// mean-field couplings exact.
+// Physical motivation: the alternating-spin pattern of a flippable hexagon
+// means that each cluster's ring-boundary spins appear in consecutive pairs
+// with opposite ising_vals.  Their contributions to H_boundary cancel
+// (ΔH = 0), so the Hamiltonian is unchanged and the old eigenstate trivially
+// satisfies both conditions.  The test verifies this holds in the actual code
+// with exact arithmetic.
 //
-// The test covers:
-//   - pairs where both si and sj are boundary spins of the *same* cluster
-//     (the "trivial" case: ΔH = 0 since σ_i = −σ_j ⟹ their contributions cancel)
-//   - pairs where si or sj belong to *different* clusters, or only one is
-//     a boundary spin (the non-trivial case).
+// Only plaquettes whose all 6 members are non-deleted and non-quantum
+// (is_complete == true) and that are in the strict alternating state
+// (the actual closed-worm precondition) are tested.
 //
 // Returns 0 on full pass, 1 if any violation is found.
 
 #include "sim_bits.hpp"
 #include "monte_carlo.hpp"
 
-#include <algorithm>
 #include <cmath>
 #include <iostream>
 #include <iomanip>
@@ -42,29 +40,46 @@
 static const char* spin_type(const Spin* s) {
     if (s->deleted)      return "deleted";
     if (s->is_quantum()) return "quantum";
-    for (Spin* nb : s->neighbours)
+    for (const Spin* nb : s->neighbours)
         if (!nb->deleted && nb->is_quantum()) return "boundary";
     return "classical";
 }
 
-// Returns cluster sites (indices into qc.spins) that are direct Ising
-// neighbours of at least one uninvolved boundary spin (i.e. in
-// qc.classical_boundary_spins but not equal to si or sj).
-static std::vector<int> constrained_sites(const QClusterMF& qc,
-                                           const Spin* si, const Spin* sj) {
+// Returns true if plaquette is in the strict alternating state required for
+// a closed worm: every consecutive pair of member spins has opposite ising_val.
+static bool is_alternating(const Plaq& p) {
+    int prev = p.member_spins[0]->ising_val;
+    for (int i = 1; i < 6; i++) {
+        int cur = p.member_spins[i]->ising_val;
+        if (cur * prev != -1) return false;
+        prev = cur;
+    }
+    return true;
+}
+
+// Cluster site indices (into qc.spins) whose Ising coupling to the
+// cluster Hamiltonian involves at least one *uninvolved* boundary spin
+// (i.e. a classical_boundary_spin of qc that is NOT one of the ring spins).
+static std::vector<int> constrained_sites(
+        const QClusterMF& qc,
+        const std::array<Spin*, 6>& ring)
+{
     std::vector<int> out;
-    int ns = (int)qc.spins.size();
-    for (int k = 0; k < ns; k++) {
+    for (int k = 0; k < (int)qc.spins.size(); k++) {
         const Spin* qs = qc.spins[k];
-        bool coupled = false;
+        bool coupled_to_uninvolved = false;
         for (const Spin* b : qc.classical_boundary_spins) {
-            if (b == si || b == sj) continue;          // skip involved spins
+            // Is b a ring spin?  Skip if so.
+            bool in_ring = false;
+            for (const Spin* rs : ring) if (b == rs) { in_ring = true; break; }
+            if (in_ring) continue;
+            // Is qs a direct neighbour of b?
             for (const Spin* nb : qs->neighbours) {
-                if (nb == b) { coupled = true; break; }
+                if (nb == b) { coupled_to_uninvolved = true; break; }
             }
-            if (coupled) break;
+            if (coupled_to_uninvolved) break;
         }
-        if (coupled) out.push_back(k);
+        if (coupled_to_uninvolved) out.push_back(k);
     }
     return out;
 }
@@ -78,9 +93,10 @@ int main() {
 
     constexpr double EPS = 1e-8;
 
-    int pairs_tested    = 0;
-    int energy_failures = 0;   // no eigenstate with E == E_old found after flip
-    int sz_failures     = 0;   // energy match found but no such eigenstate preserves <Sz>
+    int rings_tested    = 0;
+    int energy_failures = 0;   // (a) violated: no new eigenstate has E == E_old
+    int sz_failures     = 0;   // (b) violated: energy match exists but no such
+                               //     eigenstate preserves <Sz> on constrained sites
 
     for (double p : {0.05, 0.10}) {
         for (size_t trial = 0; trial < 8; trial++) {
@@ -99,13 +115,13 @@ int main() {
             for (auto& qc : state.clusters) qc.initialise();
             state.partition_spins(sc.get_objects<Spin>());
 
-            // Randomise non-quantum spins to produce a varied background.
+            // Randomise non-quantum spins.
             std::uniform_int_distribution<int> coin(0, 1);
             for (auto& s : sc.get_objects<Spin>())
                 if (!s.deleted && !s.is_quantum())
                     s.ising_val = coin(rng) ? +1 : -1;
 
-            // Sync cluster boundary configs.
+            // Sync cluster boundary configs after randomisation.
             for (auto& qc : state.clusters) {
                 QClusterMF::BoundaryConfig cfg = 0;
                 for (int i = 0; i < (int)qc.classical_boundary_spins.size(); i++)
@@ -114,161 +130,145 @@ int main() {
                 qc.diagonalise(cfg);
             }
 
-            // ── iterate over every tetrahedron ────────────────────────────
-            for (auto& tetra : sc.get_objects<Tetra>()) {
+            // ── iterate over flippable hexagonal plaquettes ───────────────
+            for (Plaq* p : state.intact_plaqs) {
+                // Only test rings that are in the strict alternating state
+                // (the actual precondition for a closed worm move).
+                if (!is_alternating(*p)) continue;
 
-                // Collect non-deleted, non-quantum member spins.
-                std::vector<Spin*> eligible;
-                for (Spin* s : tetra.member_spins)
-                    if (!s->deleted && !s->is_quantum())
-                        eligible.push_back(s);
+                const auto& ring = p->member_spins;
 
-                // Test every pair with opposite ising_vals that includes at
-                // least one boundary spin (pure-classical pairs have no cluster
-                // to perturb and are uninteresting for this test).
-                for (size_t a = 0; a < eligible.size(); a++) {
-                    for (size_t b = a + 1; b < eligible.size(); b++) {
-                        Spin* si = eligible[a];
-                        Spin* sj = eligible[b];
-
-                        // Worm constraint: opposite ising_vals.
-                        if (si->ising_val == sj->ising_val) continue;
-
-                        const bool si_bnd = (std::string(spin_type(si)) == "boundary");
-                        const bool sj_bnd = (std::string(spin_type(sj)) == "boundary");
-                        if (!si_bnd && !sj_bnd) continue;  // no cluster involved
-
-                        // Find clusters that list si or sj as a classical boundary spin.
-                        std::vector<QClusterMF*> touched;
-                        for (auto& qc : state.clusters) {
-                            bool has_si = false, has_sj = false;
-                            for (Spin* bs : qc.classical_boundary_spins) {
-                                if (bs == si) has_si = true;
-                                if (bs == sj) has_sj = true;
-                            }
-                            if (has_si || has_sj) touched.push_back(&qc);
+                // Find clusters that have at least one ring spin as a
+                // classical boundary spin.
+                std::vector<QClusterMF*> touched;
+                for (auto& qc : state.clusters) {
+                    bool found = false;
+                    for (const Spin* rs : ring) {
+                        for (const Spin* bs : qc.classical_boundary_spins) {
+                            if (bs == rs) { found = true; break; }
                         }
-                        if (touched.empty()) continue;
-
-                        ++pairs_tested;
-
-                        // ── snapshot spectra of touched clusters ──────────
-                        struct Snap {
-                            QClusterMF*              qc;
-                            int                      old_idx;
-                            double                   old_energy;
-                            QClusterMF::BoundaryConfig old_bc;
-                            // old_sz[n][k] = <Sz_k> in eigenstate n, old basis
-                            std::vector<std::vector<double>> old_sz;
-                        };
-                        std::vector<Snap> snaps;
-                        snaps.reserve(touched.size());
-                        for (QClusterMF* qc : touched) {
-                            Snap s;
-                            s.qc        = qc;
-                            s.old_idx   = qc->eigenstate_idx;
-                            s.old_energy = qc->energy();
-                            s.old_bc    = qc->boundary_config;
-                            const int dim = (int)qc->eigenvalues.size();
-                            const int ns  = (int)qc->spins.size();
-                            s.old_sz.assign(dim, std::vector<double>(ns));
-                            for (int n = 0; n < dim; n++)
-                                for (int k = 0; k < ns; k++)
-                                    s.old_sz[n][k] = qc->expect_Sz(n, k);
-                            snaps.push_back(std::move(s));
-                        }
-
-                        // ── flip both spins and re-diagonalise ────────────
-                        si->ising_val *= -1;
-                        sj->ising_val *= -1;
-
-                        for (QClusterMF* qc : touched) {
-                            QClusterMF::BoundaryConfig new_cfg = 0;
-                            for (int k = 0; k < (int)qc->classical_boundary_spins.size(); k++)
-                                if (qc->classical_boundary_spins[k]->ising_val == +1)
-                                    new_cfg |= (1u << k);
-                            qc->diagonalise(new_cfg);
-                        }
-
-                        // ── check property for each touched cluster ───────
-                        for (const auto& snap : snaps) {
-                            QClusterMF* qc = snap.qc;
-                            const int dim  = (int)qc->eigenvalues.size();
-
-                            const std::vector<int> csites =
-                                constrained_sites(*qc, si, sj);
-
-                            bool found_energy = false;
-                            bool found_full   = false;
-
-                            for (int n = 0; n < dim; n++) {
-                                if (std::abs(qc->eigenvalues[n] - snap.old_energy) > EPS)
-                                    continue;
-                                found_energy = true;
-
-                                // Check <Sz> on constrained sites.
-                                bool sz_ok = true;
-                                for (int site : csites) {
-                                    double old_sz = snap.old_sz[snap.old_idx][site];
-                                    double new_sz = qc->expect_Sz(n, site);
-                                    if (std::abs(new_sz - old_sz) > EPS) {
-                                        sz_ok = false;
-                                        break;
-                                    }
-                                }
-                                if (sz_ok) { found_full = true; break; }
-                            }
-
-                            if (!found_energy) {
-                                ++energy_failures;
-                                std::cerr << "ENERGY FAIL  p=" << p
-                                          << " trial=" << trial
-                                          << "  E_old=" << snap.old_energy
-                                          << "\n    si=" << spin_type(si)
-                                          << "(σ=" << (si->ising_val) << ")"  // already flipped
-                                          << "  sj=" << spin_type(sj)
-                                          << "(σ=" << (sj->ising_val) << ")"
-                                          << "\n    cluster size=" << qc->spins.size()
-                                          << "  n_bnd=" << qc->classical_boundary_spins.size()
-                                          << "  new evals:";
-                                for (int n = 0; n < dim; n++)
-                                    std::cerr << " " << std::fixed
-                                              << std::setprecision(8)
-                                              << qc->eigenvalues[n];
-                                std::cerr << "\n";
-                            } else if (!found_full) {
-                                ++sz_failures;
-                                std::cerr << "SZ FAIL  p=" << p
-                                          << " trial=" << trial
-                                          << "  E_old=" << snap.old_energy
-                                          << "\n    si=" << spin_type(si)
-                                          << "  sj=" << spin_type(sj)
-                                          << "  cluster size=" << qc->spins.size()
-                                          << "  constrained_sites=" << csites.size()
-                                          << "\n    old <Sz> at constrained sites (eigenstate "
-                                          << snap.old_idx << "):";
-                                for (int site : csites)
-                                    std::cerr << " " << std::fixed
-                                              << std::setprecision(8)
-                                              << snap.old_sz[snap.old_idx][site];
-                                std::cerr << "\n";
-                            }
-                        }
-
-                        // ── restore: unflip spins, re-diagonalise old cfg ─
-                        si->ising_val *= -1;
-                        sj->ising_val *= -1;
-                        for (const auto& snap : snaps) {
-                            snap.qc->diagonalise(snap.old_bc);   // restores exact spectrum from cache
-                            snap.qc->eigenstate_idx = snap.old_idx;
-                        }
+                        if (found) break;
                     }
+                    if (found) touched.push_back(&qc);
+                }
+                if (touched.empty()) continue;
+
+                ++rings_tested;
+
+                // ── snapshot every touched cluster ────────────────────────
+                struct Snap {
+                    QClusterMF*                qc;
+                    int                        old_idx;
+                    double                     old_energy;
+                    QClusterMF::BoundaryConfig old_bc;
+                    // old_sz[n][k] = <Sz_k> in eigenstate n, before flip
+                    std::vector<std::vector<double>> old_sz;
+                };
+                std::vector<Snap> snaps;
+                snaps.reserve(touched.size());
+                for (QClusterMF* qc : touched) {
+                    Snap s;
+                    s.qc         = qc;
+                    s.old_idx    = qc->eigenstate_idx;
+                    s.old_energy = qc->energy();
+                    s.old_bc     = qc->boundary_config;
+                    const int dim = (int)qc->eigenvalues.size();
+                    const int ns  = (int)qc->spins.size();
+                    s.old_sz.assign(dim, std::vector<double>(ns));
+                    for (int n = 0; n < dim; n++)
+                        for (int k = 0; k < ns; k++)
+                            s.old_sz[n][k] = qc->expect_Sz(n, k);
+                    snaps.push_back(std::move(s));
+                }
+
+                // ── flip all 6 ring spins ─────────────────────────────────
+                for (Spin* s : ring) s->ising_val *= -1;
+
+                // ── re-diagonalise touched clusters ───────────────────────
+                for (QClusterMF* qc : touched) {
+                    QClusterMF::BoundaryConfig new_cfg = 0;
+                    for (int k = 0; k < (int)qc->classical_boundary_spins.size(); k++)
+                        if (qc->classical_boundary_spins[k]->ising_val == +1)
+                            new_cfg |= (1u << k);
+                    qc->diagonalise(new_cfg);
+                }
+
+                // ── verify property for each touched cluster ──────────────
+                for (const auto& snap : snaps) {
+                    QClusterMF* qc  = snap.qc;
+                    const int   dim = (int)qc->eigenvalues.size();
+
+                    const std::vector<int> csites = constrained_sites(*qc, ring);
+
+                    bool found_energy = false;
+                    bool found_full   = false;
+
+                    for (int n = 0; n < dim; n++) {
+                        // (a) energy must match exactly.
+                        if (std::abs(qc->eigenvalues[n] - snap.old_energy) > EPS)
+                            continue;
+                        found_energy = true;
+
+                        // (b) <Sz_k> must match for every constrained site.
+                        bool sz_ok = true;
+                        for (int site : csites) {
+                            double old_sz = snap.old_sz[snap.old_idx][site];
+                            double new_sz = qc->expect_Sz(n, site);
+                            if (std::abs(new_sz - old_sz) > EPS) {
+                                sz_ok = false;
+                                break;
+                            }
+                        }
+                        if (sz_ok) { found_full = true; break; }
+                    }
+
+                    if (!found_energy) {
+                        ++energy_failures;
+                        std::cerr << "ENERGY FAIL  p=" << p
+                                  << " trial=" << trial
+                                  << "  E_old=" << std::fixed
+                                  << std::setprecision(10) << snap.old_energy
+                                  << "  cluster_size=" << qc->spins.size()
+                                  << "  n_ring_bnd=";
+                        int nrb = 0;
+                        for (const Spin* bs : qc->classical_boundary_spins)
+                            for (const Spin* rs : ring) if (bs == rs) nrb++;
+                        std::cerr << nrb
+                                  << "\n  ring spin types:";
+                        for (const Spin* rs : ring)
+                            std::cerr << " " << spin_type(rs);
+                        std::cerr << "\n  new eigenvalues:";
+                        for (int n = 0; n < dim; n++)
+                            std::cerr << " " << qc->eigenvalues[n];
+                        std::cerr << "\n";
+
+                    } else if (!found_full) {
+                        ++sz_failures;
+                        std::cerr << "SZ FAIL  p=" << p
+                                  << " trial=" << trial
+                                  << "  E_old=" << snap.old_energy
+                                  << "  cluster_size=" << qc->spins.size()
+                                  << "  constrained_sites=" << csites.size()
+                                  << "\n  old <Sz> at constrained sites"
+                                  << " (eigenstate " << snap.old_idx << "):";
+                        for (int site : csites)
+                            std::cerr << " " << std::fixed << std::setprecision(8)
+                                      << snap.old_sz[snap.old_idx][site];
+                        std::cerr << "\n";
+                    }
+                }
+
+                // ── restore: unflip ring, re-diagonalise with old bc ──────
+                for (Spin* s : ring) s->ising_val *= -1;
+                for (const auto& snap : snaps) {
+                    snap.qc->diagonalise(snap.old_bc);   // exact restore from cache
+                    snap.qc->eigenstate_idx = snap.old_idx;
                 }
             }
         }
     }
 
-    std::cout << "Pairs_tested="    << pairs_tested
+    std::cout << "Rings_tested="    << rings_tested
               << "  Energy_failures=" << energy_failures
               << "  Sz_failures="     << sz_failures
               << "\n";

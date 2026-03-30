@@ -12,7 +12,19 @@ test_worm_bin = executable('test_worm', 'test_worm.cpp',
  )
 
 
+worm_step_sym_bin = executable('test_worm_step_symmetry', 'test_worm_step_symmetry.cpp',
+  include_directories:percol_inc,
+  link_with: [percol_lib],
+  dependencies: [main_deps, eigen_dep, hdf5_dep]
+ )
+
 test_monopole_worm_bin = executable('test_monopole_worm', 'test_monopole_worm.cpp',
+  include_directories:percol_inc,
+  link_with: [percol_lib],
+  dependencies: [main_deps, eigen_dep, hdf5_dep]
+ )
+
+test_energy_helpers_bin = executable('test_energy_helpers', 'test_energy_helpers.cpp',
   include_directories:percol_inc,
   link_with: [percol_lib],
   dependencies: [main_deps, eigen_dep, hdf5_dep]
