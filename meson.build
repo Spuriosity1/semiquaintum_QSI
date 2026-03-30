@@ -24,9 +24,11 @@ else
   hdf5_dep = dependency('hdf5', language: 'c', required: true)
 endif
 
-project_inc = ['include']
+project_inc = []
 
 lil_dep = dependency('lattice_lib')
 
 subdir('common')
 subdir('percol')
+
+subdir('test')

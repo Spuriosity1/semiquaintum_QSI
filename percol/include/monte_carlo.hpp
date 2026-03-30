@@ -13,7 +13,7 @@ inline double classical_bond_energy(const Spin* s, double J) {
     double E = 0;
     for (const Spin* nb : s->neighbours) {
         if (!nb->deleted && !nb->is_quantum())
-            E += J * s->ising_val * nb->ising_val / 4;
+            E += J * s->ising_val * nb->ising_val;
     }
     return E;
 }
@@ -101,13 +101,17 @@ struct MCState {
     double energy();
 };
 
+// utility funciton (used by a test, otherwise could be private)
 
+// filters out a list of tetras with monopoles on them
+std::vector<Tetra*> find_monopole_tetras(const std::vector<Tetra*>& intact_tetras);
+void find_intact_tetras(const std::vector<Spin*>& classical_spins,
+        std::vector<Tetra*>& intact_tetras);
 
 // Forward declarations for free MC-move functions defined in monte_carlo.cpp.
 int try_flip_boundary_spin_MF_exact(MCSettings& mc, Spin* s);
 int try_flip_worm(MCSettings& mc, Spin* root);
-int try_flip_monopole_worm(MCSettings& mc,
-                           const std::vector<Tetra*>& intact_tetras);
+int try_flip_monopole_worm(MCSettings& mc, Tetra*tail_tetra, double target_length_mean=10);
 
 struct MCStateMF {
     std::vector<Plaq*>    intact_plaqs;
