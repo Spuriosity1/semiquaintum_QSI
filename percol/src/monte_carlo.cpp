@@ -60,14 +60,39 @@ int try_flip_ring(Plaq* p) {
     if (!p->is_complete) return 0;
     // always accept if flippable, otherwise reject
     int prev_ising = p->member_spins[0]->ising_val;
+
     for (int i=1; i<6; ++i){
         auto s = p->member_spins[i];
         if(s->ising_val*prev_ising != -1) return 0;
         prev_ising = s->ising_val;
     }
 
-    for (auto s : p->member_spins){
+    for (auto s : p->member_spins)
         s->ising_val *= -1;
+
+    // Update boundary configs of any quantum clusters adjacent to flipped spins.
+    // Incautios scan here (flipped ring guaranteed classical)
+    std::unordered_set<QClusterBase*> touched;
+    for (int i=0; i<6; i++){
+        Spin* s = p->member_spins[i];
+        for (Spin* nb : s->owning_tetras[i%2]->member_spins )
+            if (!nb->deleted && nb->is_quantum() && nb->owning_cluster)
+                touched.insert(nb->owning_cluster);
+    }
+    for (QClusterBase* qcb : touched) {
+        const double E_old = qcb->energy();
+        QClusterBase::BoundaryConfig new_cfg = 0;
+        for (int i = 0; i < (int)qcb->classical_boundary_spins.size(); i++)
+            if (qcb->classical_boundary_spins[i]->ising_val == +1)
+                new_cfg |= (1u << i);
+        qcb->diagonalise(new_cfg);
+        int best_idx = 0;
+        double best_dist = std::abs(qcb->eigenvalues[0] - E_old);
+        for (int n = 1; n < (int)qcb->eigenvalues.size(); n++) {
+            double d = std::abs(qcb->eigenvalues[n] - E_old);
+            if (d < best_dist) { best_dist = d; best_idx = n; }
+        }
+        qcb->eigenstate_idx = best_idx;
     }
     return 1;
 }
@@ -157,12 +182,19 @@ int try_flip_worm(MCSettings& mc, Spin* root) {
         }
     }
     for (QClusterBase* qcb : touched) {
-        auto* qc = static_cast<QClusterMF*>(qcb);
-        QClusterMF::BoundaryConfig new_cfg = 0;
-        for (int i = 0; i < (int)qc->classical_boundary_spins.size(); i++)
-            if (qc->classical_boundary_spins[i]->ising_val == +1)
+        const double E_old = qcb->energy();
+        QClusterBase::BoundaryConfig new_cfg = 0;
+        for (int i = 0; i < (int)qcb->classical_boundary_spins.size(); i++)
+            if (qcb->classical_boundary_spins[i]->ising_val == +1)
                 new_cfg |= (1u << i);
-        qc->diagonalise(new_cfg);
+        qcb->diagonalise(new_cfg);
+        int best_idx = 0;
+        double best_dist = std::abs(qcb->eigenvalues[0] - E_old);
+        for (int n = 1; n < (int)qcb->eigenvalues.size(); n++) {
+            double d = std::abs(qcb->eigenvalues[n] - E_old);
+            if (d < best_dist) { best_dist = d; best_idx = n; }
+        }
+        qcb->eigenstate_idx = best_idx;
     }
 
     return 1;  // loop closed, all flips committed
@@ -548,7 +580,6 @@ int try_flip_boundary_spin_MF_exact(MCSettings& mc, Spin* s) {
     const double Jzz = ModelParams::get().Jzz;
     double dE_classical = -2.0 * classical_bond_energy(s, Jzz);
 
-    double dE_quantum = 0.0;
     struct ClusterUpdate {
         QClusterMF* qc;
         QClusterMF::BoundaryConfig new_config;
@@ -557,6 +588,7 @@ int try_flip_boundary_spin_MF_exact(MCSettings& mc, Spin* s) {
     std::vector<ClusterUpdate> updates;
     updates.reserve(6);
 
+    // Pass 1: build all speculative diagonalisations before computing dE.
     for (Spin* nb : s->neighbours) {
         QClusterMF* qc = static_cast<QClusterMF*>(nb->owning_cluster);
         if (!qc ||
@@ -570,17 +602,37 @@ int try_flip_boundary_spin_MF_exact(MCSettings& mc, Spin* s) {
         if (bidx < 0) continue;
 
         QClusterMF::BoundaryConfig new_config = qc->boundary_config ^ (1u << bidx);
-        double E_old = qc->energy();
-        double mf_old = mf_interaction(*qc, qc->eigenstate_idx);
-
         QClusterMF tmp = *qc;
         tmp.diagonalise(new_config);
-
-        double E_new = tmp.eigenvalues[qc->eigenstate_idx];
-        double mf_new = mf_interaction(tmp, qc->eigenstate_idx);
-        dE_quantum += (E_new - E_old) + (mf_new - mf_old);
-
         updates.push_back({qc, new_config, std::move(tmp)});
+    }
+
+    // Pass 2: accumulate dE_quantum using updated <Sz> values for all touched clusters.
+    // When two updated clusters share an MF bond, both sides have changed <Sz>; count
+    // the pair once (pointer ordering) using new values on both sides to get the exact
+    // cross-term Jzz * (Sz_A_new * Sz_B_new - Sz_A_old * Sz_B_old).
+    double dE_quantum = 0.0;
+    for (const auto& u : updates) {
+        dE_quantum += u.tmp.eigenvalues[u.qc->eigenstate_idx] - u.qc->energy();
+
+        for (const auto& b : u.qc->mf_bonds) {
+            auto it = std::find_if(updates.begin(), updates.end(),
+                                   [&](const ClusterUpdate& v){ return v.qc == b.other; });
+            if (it != updates.end()) {
+                if (b.other < u.qc) continue;  // count each inter-update pair once
+                dE_quantum += Jzz * (
+                    u.tmp.expect_Sz(u.qc->eigenstate_idx, b.my_site)
+                        * it->tmp.expect_Sz(b.other->eigenstate_idx, b.other_site)
+                  - u.qc->expect_Sz(u.qc->eigenstate_idx, b.my_site)
+                        * b.other->expect_Sz(b.other->eigenstate_idx, b.other_site));
+            } else {
+                dE_quantum += Jzz * (
+                    u.tmp.expect_Sz(u.qc->eigenstate_idx, b.my_site)
+                        * b.other->expect_Sz(b.other->eigenstate_idx, b.other_site)
+                  - u.qc->expect_Sz(u.qc->eigenstate_idx, b.my_site)
+                        * b.other->expect_Sz(b.other->eigenstate_idx, b.other_site));
+            }
+        }
     }
 
     double dE_total = dE_classical + dE_quantum;
