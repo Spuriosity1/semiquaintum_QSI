@@ -200,10 +200,13 @@ int try_flip_worm(MCSettings& mc, Spin* root) {
     return 1;  // loop closed, all flips committed
 }
 
-// NB does NOT include usual sublattice factor
-int tetra_charge(const Tetra* t){
+int classical_tetra_charge(const Tetra* t) {
     int q = 0;
-    for (Spin* s : t->member_spins) q += s->ising_val;
+    for (Spin* s : t->member_spins) {
+        if (s->deleted) continue;
+        assert(!s->is_quantum());
+        q += s->ising_val;
+    }
     return q;
 }
 
@@ -211,7 +214,7 @@ int tetra_charge(const Tetra* t){
 std::vector<Tetra*> find_monopole_tetras(const std::vector<Tetra*>& intact_tetras){
     std::vector<Tetra*> retval;
     for (auto t : intact_tetras) {
-        if (tetra_charge(t) != 0) { retval.push_back(t); }
+        if (classical_tetra_charge(t) != 0) { retval.push_back(t); }
     }
     return retval;
 }
@@ -238,7 +241,7 @@ int try_flip_monopole_worm(MCSettings& mc, Tetra*tail_tetra, double target_lengt
     // For all intact tetrahedra that currently carry a monopole charge, try to move them
     // intact_tetras is fixed at dilution time (all 4 members present and classical);
     // only Q = Σ ising_val changes dynamically, so we scan the pre-built list.
-    int q_tail = tetra_charge(tail_tetra);
+    int q_tail = classical_tetra_charge(tail_tetra);
     if (q_tail == 0) return 0; // refuse
 
     // heal_val for the first step matches sign(Q_tail): flipping a spin with
@@ -249,7 +252,8 @@ int try_flip_monopole_worm(MCSettings& mc, Tetra*tail_tetra, double target_lengt
     std::vector<Spin*> path;
     Tetra* head_tetra = tail_tetra;
     Spin* prev_spin  = nullptr;
-    const int target_length = std::poisson_distribution<int>(target_length_mean)(mc.rng);
+//    const int target_length = std::poisson_distribution<int>(target_length_mean)(mc.rng);
+    const int target_length = std::min(target_length_mean, 4.0);
 
     while ((int)path.size() < target_length) {
         // nose-to-tail candidates: non-deleted, non-quantum spins in head with
@@ -264,6 +268,7 @@ int try_flip_monopole_worm(MCSettings& mc, Tetra*tail_tetra, double target_lengt
         Spin* next_spin = candidates[
             std::uniform_int_distribution<int>(0, (int)candidates.size() - 1)(mc.rng)
         ];
+
         Tetra* next_head = (next_spin->owning_tetras[0] == head_tetra)
                             ? next_spin->owning_tetras[1]
                             : next_spin->owning_tetras[0];
@@ -274,32 +279,42 @@ int try_flip_monopole_worm(MCSettings& mc, Tetra*tail_tetra, double target_lengt
         prev_spin = next_spin;
         head_tetra      = next_head;
         heal_val  = -heal_val;
-
     }
 
-    if (path.empty()) return 0;
+    if (path.size() < 2) return 0;
 
     // If the final head contains a quantum spin, the last flip is an uncompensated
-    // boundary-config change whose energy we don't include in dE.  Backtrack one step.
-    for (Spin* m : head_tetra->member_spins) {
-        if (m->is_quantum()) {
-            path.back()->ising_val *= -1;
-            Tetra* prev = (path.back()->owning_tetras[0] == head_tetra)
-                            ? path.back()->owning_tetras[1]
-                            : path.back()->owning_tetras[0];
-            path.pop_back();
-            head_tetra = prev;
-            if (path.empty()) return 0;
-            break;
+    // boundary-config change whose energy we don't include in dE.
+    // Backtrack until classical.
+    bool final_is_classical=false;
+    while(!final_is_classical){   
+        final_is_classical=true;
+        for (Spin* m : head_tetra->member_spins) {
+            if (m->is_quantum()) {
+                final_is_classical=false;
+                break;
+            }
         }
+        if (final_is_classical) break;
+
+
+        path.back()->ising_val *= -1;
+        Tetra* prev = (path.back()->owning_tetras[0] == head_tetra)
+                        ? path.back()->owning_tetras[1]
+                        : path.back()->owning_tetras[0];
+        path.pop_back();
+        if (path.empty()) return 0;
+        head_tetra = prev;
     }
 
-    // ΔE is purely from head and tail tetras (all intermediate tetras return to ice rule).
+    if (path.size() < 2) return 0;
+
+    // ΔE is purely from head and tail tetras (all intermediate tetras have no net field change).
     // Using sigma convention: E(tetra) = Jzz/2 * (Q²-4), so ΔE = Jzz/2 * ΔQ²
     const double Jzz = ModelParams::get().Jzz;
-    int Q_tail_proposed = tetra_charge(tail_tetra);
+    int Q_tail_proposed = classical_tetra_charge(tail_tetra);
     // q_head is current charge at head; undo the last flip to get initial charge
-    int Q_head_proposed = tetra_charge(head_tetra);
+    int Q_head_proposed = classical_tetra_charge(head_tetra);
     int Q_head_initial = Q_head_proposed - 2 * path.back()->ising_val;
     double dE = (Jzz / 2.0) * (
         (double)(Q_tail_proposed * Q_tail_proposed - q_tail * q_tail) +
@@ -316,8 +331,10 @@ int try_flip_monopole_worm(MCSettings& mc, Tetra*tail_tetra, double target_lengt
 
     // Update boundary configs of any quantum clusters adjacent to flipped spins.
     // The worm is a purely classical move: the quantum cluster should follow
-    // adiabatically — staying on the eigenstate whose energy is closest to its
-    // pre-worm energy in the new Hamiltonian (adiabatic following).
+    // adiabatically. 
+    //
+    // Needs to i) stay on an eigenstate whose energy is equal to its pre-worm
+    // energy in the new Hamiltonian, and ii) ensure that <Sz> remains unaffected.
     std::unordered_set<QClusterMF*> touched;
     for (Spin* s : path)
         for (Spin* nb : s->neighbours)
@@ -325,6 +342,8 @@ int try_flip_monopole_worm(MCSettings& mc, Tetra*tail_tetra, double target_lengt
                 touched.insert(static_cast<QClusterMF*>(nb->owning_cluster));
     for (QClusterMF* qc : touched) {
         const double E_old = qc->energy();   // eigenvalue before boundary change
+        auto Sz_old = qc->get_Sz_expect(); // all <Sz> vals
+        
 
         QClusterMF::BoundaryConfig new_cfg = 0;
         for (int i = 0; i < (int)qc->classical_boundary_spins.size(); i++)
@@ -332,12 +351,17 @@ int try_flip_monopole_worm(MCSettings& mc, Tetra*tail_tetra, double target_lengt
                 new_cfg |= (1u << i);
         qc->diagonalise(new_cfg);
 
-        // Find eigenstate in new basis with energy closest to E_old.
+        // Find eigenstate in new basis with energy closest to E_old (must be exact match!)
         int best_idx = 0;
-        double best_dist = std::abs(qc->eigenvalues[0] - E_old);
+        double best_dist = std::abs(qc->eigenvalues[0] - E_old) + (qc->get_Sz_expect(0) - Sz_old).norm();
         for (int n = 1; n < (int)qc->eigenvalues.size(); n++) {
-            double d = std::abs(qc->eigenvalues[n] - E_old);
+            double d = std::abs(qc->eigenvalues[n] - E_old) + (qc->get_Sz_expect(n) - Sz_old).norm();
             if (d < best_dist) { best_dist = d; best_idx = n; }
+        }
+        if (best_dist > 1e-8) {
+            std::cerr<<"Original E:"<<E_old;
+            std::cerr<<"\nBest E:"<<qc->eigenvalues[best_idx]<<"\n";
+            throw std::runtime_error("Bad cluster reassignment");
         }
         qc->eigenstate_idx = best_idx;
     }
@@ -854,6 +878,11 @@ template void MCStateMF::sweep<true>(MCSettings&);
 //     The 0.5 cancels the double-counting arising from each bond appearing in
 //     both clusters' mf_bonds list.
 double MCStateMF::energy() {
+    return classical_energy() + cluster_energy() + cluster_cluster_energy();
+}
+
+
+double MCStateMF::classical_energy() {
     double E = 0;
     double Jzz = ModelParams::get().Jzz;
 
@@ -873,13 +902,23 @@ double MCStateMF::energy() {
         }
         E += Jzz * acc * s->ising_val;
     }
+    return E;
+}
 
+double MCStateMF::cluster_energy(){
     // cluster eigenvalues (includes classical and quantum boundary couplings)
+    double E=0;
     for (const auto& qc : clusters) {
         E += qc.energy();
     }
+    return E;
+}
 
+double MCStateMF::cluster_cluster_energy(){
     // MF cross-terms: factor 1/2 to avoid double-counting (each bond in mf_bonds from both sides)
+    double E=0;
+    double Jzz = ModelParams::get().Jzz;
+
     for (const auto& qc : clusters) {
         for (const auto& b : qc.mf_bonds) {
             E += 0.5 * Jzz * qc.expect_Sz(qc.eigenstate_idx, b.my_site)

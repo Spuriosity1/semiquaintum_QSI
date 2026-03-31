@@ -27,16 +27,6 @@
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 
-static int classical_tetra_charge(const Tetra* t) {
-    int q = 0;
-    for (Spin* s : t->member_spins) {
-        if (s->deleted) continue;
-        assert(!s->is_quantum());
-        q += s->ising_val;
-    }
-    return q;
-}
-
 static const char* spin_type(const Spin* s) {
     if (s->deleted)      return "deleted";
     if (s->is_quantum()) return "quantum";
@@ -115,13 +105,22 @@ int main() {
             auto& all_tetras = sc.get_objects<Tetra>();
             const double Jzz = ModelParams::get().Jzz;
 
+            // Only query charge on tetras that are free of quantum members
+            // (classical_tetra_charge asserts no quantum spins).
+            auto has_no_quantum = [](const Tetra* t) {
+                for (const Spin* m : t->member_spins)
+                    if (m->is_quantum()) return false;
+                return true;
+            };
+
             for (Tetra* t : state.intact_tetras) {
                 if (classical_tetra_charge(t) == 0) continue;
 
-                // Snapshot charges of every tetrahedron (intact and non-intact).
-                std::vector<int> Q_before(all_tetras.size());
+                // Snapshot charges of every quantum-free tetrahedron.
+                std::vector<int> Q_before(all_tetras.size(), 0);
                 for (size_t i = 0; i < all_tetras.size(); i++)
-                    Q_before[i] = classical_tetra_charge(&all_tetras[i]);
+                    if (has_no_quantum(&all_tetras[i]))
+                        Q_before[i] = classical_tetra_charge(&all_tetras[i]);
 
                 const double E_before = state.energy();
 
@@ -139,6 +138,7 @@ int main() {
                 std::vector<ChangedTetra> changed;
 
                 for (size_t i = 0; i < all_tetras.size(); i++) {
+                    if (!has_no_quantum(&all_tetras[i])) continue;
                     int Qf = classical_tetra_charge(&all_tetras[i]);
                     if (Qf != Q_before[i]) {
                         dE_formula += (Jzz / 2.0) *

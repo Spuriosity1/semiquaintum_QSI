@@ -104,9 +104,12 @@ struct MCState {
 // utility funciton (used by a test, otherwise could be private)
 
 // filters out a list of tetras with monopoles on them
+int classical_tetra_charge(const Tetra* t);
 std::vector<Tetra*> find_monopole_tetras(const std::vector<Tetra*>& intact_tetras);
 void find_intact_tetras(const std::vector<Spin*>& classical_spins,
         std::vector<Tetra*>& intact_tetras);
+
+
 
 // Forward declarations for free MC-move functions defined in monte_carlo.cpp.
 int try_flip_boundary_spin_MF_exact(MCSettings& mc, Spin* s);
@@ -130,6 +133,14 @@ struct MCStateMF {
     void sweep(MCSettings& mc_);
 
     double energy();
+
+    // utility (for benchmarking)
+    // Classical-classical energy
+    double classical_energy();
+    // Onsite energy of all clusters
+    double cluster_energy();
+    // cluster-cluster meanfield energy
+    double cluster_cluster_energy();
 };
 
 extern template void MCStateMF::sweep<false>(MCSettings&);

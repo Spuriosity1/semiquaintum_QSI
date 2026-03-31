@@ -17,13 +17,14 @@
 //
 // Returns 0 on pass, 1 on any failure.
 
+#include "argparse/argparse.hpp"
 #include "sim_bits.hpp"
 #include "monte_carlo.hpp"
 #include <iostream>
 #include <iomanip>
 #include <cmath>
 
-// try_flip_ring is not exposed in monte_carlo.hpp (no MCSettings arg).
+// try_flip_ring and tetra_charge are not exposed in monte_carlo.hpp.
 int try_flip_ring(Plaq*);
 
 // Replicate the static mf_interaction() from monte_carlo.cpp.
@@ -39,13 +40,25 @@ static double mf_interaction_local(const QClusterMF& qc, int n) {
 }
 
 int main(int argc, char** argv) {
-    double Jpm=0.1;
-    if (argc > 1){
-        Jpm = std::atof(argv[1]);
-    }
+
+    auto ap = argparse::ArgumentParser("test_energy_helpers");
+    ap.add_argument("Jpm")
+        .help("XX coupling strength on quantum clusters")
+        .default_value((double) 0.1)
+        .scan<'g', double>();
+
+    ap.add_argument("--classical")
+        .help("Skip quantum cluster identification — treat all spins as classical (benchmarking)")
+        .default_value(false)
+        .implicit_value(true);
+
+    ap.parse_args(argc, argv);
+
+    bool classical_only = ap.get<bool>("--classical");
+
     ModelParams::get().Jzz = 1.0;
-    ModelParams::get().Jxx = Jpm;
-    ModelParams::get().Jyy = Jpm;
+    ModelParams::get().Jxx = ap.get<double>("Jpm");
+    ModelParams::get().Jyy = ap.get<double>("Jpm");
     const double Jzz = ModelParams::get().Jzz;
 
     constexpr double EPSILON = 1e-9;
@@ -66,7 +79,11 @@ int main(int argc, char** argv) {
         return true;
     };
 
-    for (double p : {0.0, 0.05, 0.10}) {
+    for (double p : {0.0, 0.01, 0.05, 0.10}) {
+        std::cout<<"==============================\n"
+            <<" p = "<<p<<"\n"
+            <<"==============================\n";
+
         for (size_t trial = 0; trial < 5; ++trial) {
             const size_t seed = trial * 137 + 31;
 
@@ -76,10 +93,13 @@ int main(int argc, char** argv) {
             MCStateMF state;
 
             delete_spins(rng, sc, p, seed_tetras);
-            identify_1o_clusters(seed_tetras, state.clusters);
+            if (!classical_only)
+                identify_1o_clusters(seed_tetras, state.clusters);
             identify_flippable_hexas(sc, state.intact_plaqs);
             for (auto& qc : state.clusters) qc.initialise();
+
             state.partition_spins(sc.get_objects<Spin>());
+            
 
             // Randomise spin configuration
             std::uniform_int_distribution<int> coin(0, 1);
@@ -331,6 +351,85 @@ int main(int argc, char** argv) {
                     }
                     restore_spins(spin_backup);
                 }
+            }
+
+
+            // ----------------------------------------------------------------
+            // CHECK F: monopole worm dE self-consistency
+            //
+            // The worm's Metropolis step uses:
+            //   dE_tetra = Jzz/2 * Σ_{intact tetras} (Q_new² - Q_old²)
+            // This is exact when all path spins are purely classical (type-4).
+            // When a path spin is a boundary spin (type-3, adjacent to a
+            // quantum cluster), flipping it shifts the cluster eigenvalue via
+            // H_boundary — a contribution absent from the tetra formula.
+            //
+            // This check measures dE_tetra independently and compares it to
+            // the actual E_after - E_before.  A mismatch means the Metropolis
+            // criterion is wrong and detailed balance is broken.
+            //
+            // beta=0 is used so every move is accepted, maximising coverage.
+            // ----------------------------------------------------------------
+            if (!state.intact_tetras.empty()) {
+
+                std::cout<<"Check F"<<std::endl;
+                MCSettings mc_mon;
+                mc_mon.beta = 0.0;
+                mc_mon.rng  = std::mt19937(seed ^ 0xFEEDF00Du);
+
+                size_t n_tried=0;
+                size_t n_failed_F=0;
+
+                const auto spin_backup = save_spins();
+
+                for (Tetra* t : find_monopole_tetras(state.intact_tetras)) {
+                    // Save per-tetra charges and total energy before the move.
+                    std::vector<int> Q_old(state.intact_tetras.size());
+                    for (int i = 0; i < (int)state.intact_tetras.size(); i++)
+                        Q_old[i] = classical_tetra_charge(state.intact_tetras[i]);
+                    const double E_before = state.energy();
+
+                    const double E_class_before = state.classical_energy();
+                    const double E_qc_before = state.cluster_energy();
+                    const double E_mf_before = state.cluster_cluster_energy();
+
+
+                    const int accepted = try_flip_monopole_worm(mc_mon, t, 4);
+                    if (!accepted) continue;
+                    n_tried++;
+
+                    // Cluster-consistency sub-check: cluster state written by
+                    // the worm should match a full resync.
+                    const double E_stored = state.energy();
+                    resync_clusters();
+                    const double E_true = state.energy();
+                    if (!check("F(consistency): monopole worm cluster state", E_true, E_stored))
+                        std::cerr << "  clusters=" << state.clusters.size() << "\n";
+
+                    // dE accuracy check: tetra formula vs actual energy change.
+                    // Any discrepancy means Metropolis used the wrong dE.
+                    const double Jzz_val = ModelParams::get().Jzz;
+                    double dE_tetra = 0.0;
+                    for (int i = 0; i < (int)state.intact_tetras.size(); i++) {
+                        int Q_new = classical_tetra_charge(state.intact_tetras[i]);
+                        dE_tetra += (Jzz_val / 2.0) * (Q_new*Q_new - Q_old[i]*Q_old[i]);
+                    }
+                    if (!check("F(dE):           monopole worm dE formula", dE_tetra, E_true - E_before)){
+                        const double E_class_true = state.classical_energy();
+                        const double E_qc_true = state.cluster_energy();
+                        const double E_mf_true = state.cluster_cluster_energy();
+                        n_failed_F++;
+
+                        std::cerr << "  dE_tetra=" << dE_tetra
+                                  << "  dE_actual=" << E_true - E_before
+                                  << "\n            \tdClassical=" << E_class_true - E_class_before
+                                  << "\n            \tdQuantum=" << E_qc_true - E_qc_before
+                                  << "\n            \tdMF_quantum=" << E_mf_true - E_mf_before
+                                  << "  diff=" << std::abs(dE_tetra - (E_true - E_before)) << "\n";
+                    }
+                    restore_spins(spin_backup);
+                }
+                std::cout<<"Check F:"<<n_tried<<" tried "<< n_failed_F<<" failed"<<std::endl;
             }
         }
     }

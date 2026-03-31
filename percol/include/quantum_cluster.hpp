@@ -208,6 +208,11 @@ struct QClusterMF : public QClusterBase {
         return Sz_expect(n, site_i);
     }
 
+    inline auto get_Sz_expect(int n=-1) const {
+        if (n==-1) n= this->eigenstate_idx;
+        return Sz_expect.row(n);
+    }
+
     // precomputed Sz expectation cache (always set alongside eval_cache)
     std::shared_ptr<const std::vector<Eigen::MatrixXd>> sz_cache;
 
