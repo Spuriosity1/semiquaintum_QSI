@@ -49,9 +49,9 @@ def parse_dseed(fname):
 _COMPATIBLE_TAGS = {
     "L":   (r"_L(\d+)[_.]",            int),
     "p":   (r"_p(\d+\.?\d*)[_.]",      float),
-    "Jzz": (r"_Jzz(\d+\.?\d*)[_.]",   float),
-    "Jxx": (r"_Jxx(\d+\.?\d*)[_.]",   float),
-    "Jyy": (r"_Jyy(\d+\.?\d*)[_.]",   float),
+    "Jzz": (r"_Jzz([-\+\d]+\.?\d*)[_.]",   float),
+    "Jxx": (r"_Jxx([-\+\d]+\.?\d*)[_.]",   float),
+    "Jyy": (r"_Jyy([-\+\d]+\.?\d*)[_.]",   float),
 }
 
 

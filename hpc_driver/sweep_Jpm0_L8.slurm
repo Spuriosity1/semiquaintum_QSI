@@ -55,6 +55,7 @@ Jzz=1.0
 Jxx=0.0
 Jyy=0.0
 N_DISORDER_REALISATIONS=8
+moves="CQBRM"
 
 mkdir -p $OUT_PATH
 
@@ -62,6 +63,6 @@ ds=$(( $SLURM_ARRAY_TASK_ID % $N_DISORDER_REALISATIONS ))
 ms=$(( $SLURM_ARRAY_TASK_ID / $N_DISORDER_REALISATIONS ))
 
 # disorder realisation
-CMD="$EXE_DIR/sq_pyrochlore $L $DILUTION -o $OUT_PATH --Thot 100 --Tcold 0.01 --Jzz $Jzz --Jxx $Jxx --Jyy $Jyy --nsweep 256 --nburn 16 -s $ds -m $ms --moves CQB"
+CMD="$EXE_DIR/sq_pyrochlore $L $DILUTION -o $OUT_PATH --Thot 100 --Tcold 0.01 --Jzz $Jzz --Jxx $Jxx --Jyy $Jyy --nsweep 256 --nburn 16 -s $ds -m $ms --moves $moves --prefix run_$moves"
 echo "$CMD"
 $CMD
