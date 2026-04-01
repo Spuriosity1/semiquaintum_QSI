@@ -9,6 +9,7 @@ echo "source $SCRIPT_DIR"
 alias pqf="python3 scripts/plot_quantum_fraction.py ../output/percolator/hist_L10_*"
 alias acc="scripts/acc_heat_capacity.py"
 alias phc=scripts/plot_heat_capacity.py
+alias cp_out="scp sheldon-fu:/scratch/alaric/out/sq_qsi/\*_merge\*.h5 ../out/sq_qsi"
 
 figdir="$HOME/Documents/gh-papers/DefectsInQSI/figures"
 ddir="$SCRIPT_DIR/../out/sq_qsi"
@@ -19,6 +20,7 @@ echo "Defined aliases: "
 echo `which pqf`
 echo `which acc`
 echo `which phc`
+echo `which cp_out`
 echo
 echo "Defined env"
 echo "figdir=$figdir"

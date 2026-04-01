@@ -256,6 +256,15 @@ int try_flip_monopole_worm(MCSettings& mc, Tetra*tail_tetra, double target_lengt
     // and creates a charge of opposite sign in the next tetrahedron.
     int heal_val = (q_tail > 0) ? +1 : -1; // majority spin type, flippable type
 
+    // Count candidates at the tail before any flips — needed for the Hastings
+    // correction.  Detailed balance analysis shows the intermediate step ratios
+    // cancel exactly; only the tail (step 0) and head (reverse step 0) counts
+    // differ.
+    int n_tail_candidates = 0;
+    for (Spin* s : tail_tetra->member_spins)
+        if (!s->deleted && !s->is_quantum() && s->ising_val == heal_val)
+            ++n_tail_candidates;
+
     std::vector<Spin*> path;
     Tetra* head_tetra = tail_tetra;
     Spin* prev_spin  = nullptr;
@@ -326,8 +335,25 @@ int try_flip_monopole_worm(MCSettings& mc, Tetra*tail_tetra, double target_lengt
         (double)(Q_head_proposed * Q_head_proposed - Q_head_initial * Q_head_initial)
     );
 
-    // --- Metropolis ---
-    int accept = mc.uniform(mc.rng) < std::exp(-mc.beta * (dE));
+    // Hastings correction.  Intermediate tetras are all at ice-rule (Q=0) before
+    // being visited, so their two "other" spins always have one +1 and one −1
+    // (they sum to zero), giving n_fwd_k = n_rev_k = 2 at every intermediate step.
+    // Only the tail (Q≠0, step 0 of forward) and head (step 0 of reverse) differ:
+    //
+    //   q(x→x') = 1/n_tail,  q(x'→x) = 1/n_head
+    //   Hastings = q(x'→x)/q(x→x') = n_tail / n_head
+    //
+    // In the proposed state path.back() sits in head_tetra with ising_val =
+    // reverse_heal_val and is always a reverse candidate, so n_head ≥ 1.
+    const int reverse_heal_val = path.back()->ising_val;
+    int n_head_candidates = 0;
+    for (Spin* s : head_tetra->member_spins)
+        if (!s->deleted && !s->is_quantum() && s->ising_val == reverse_heal_val)
+            ++n_head_candidates;
+
+    // --- Metropolis-Hastings ---
+    const double hastings = (double)n_tail_candidates / (double)n_head_candidates;
+    int accept = mc.uniform(mc.rng) < std::exp(-mc.beta * dE) * hastings;
     if (!accept) {
         for (Spin* s : path) s->ising_val *= -1;
     }
@@ -402,7 +428,7 @@ int try_flip_monopole_worm(MCSettings& mc, Tetra*tail_tetra, double target_lengt
 
     }
 
-    return 1;
+    return accept;
 }
 
 

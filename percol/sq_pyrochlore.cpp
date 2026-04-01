@@ -252,11 +252,10 @@ int main (int argc, char *argv[]) {
         }
 
         if (verbosity >= 1) {
-            if (!state.intact_plaqs.empty())   params.accepted_plaq     /= state.intact_plaqs.size();
-            if (!state.classical_spins.empty()) params.accepted_classical /= state.classical_spins.size();
-            if (!state.clusters.empty())        params.accepted_quantum   /= state.clusters.size();
-            if (!state.boundary_spins.empty())  params.accepted_boundary  /= state.boundary_spins.size();
-            if (params.attempted_monopole > 0)  params.accepted_monopole  /= params.attempted_monopole;
+            if (!state.intact_plaqs.empty())    params.accepted_plaq      /= state.intact_plaqs.size();
+            if (!state.classical_spins.empty()) params.accepted_classical  /= state.classical_spins.size();
+            if (!state.clusters.empty())        params.accepted_quantum    /= state.clusters.size();
+            if (!state.boundary_spins.empty())  params.accepted_boundary   /= state.boundary_spins.size();
 
             std::cout << std::setprecision(6) << "T = " << T
                       << "\tE = " << em.curr_E()
