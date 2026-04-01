@@ -197,6 +197,16 @@ struct QClusterMF : public QClusterBase {
 
     void initialise() override;
     void diagonalise(BoundaryConfig config) override;
+    void sync(){
+        this->boundary_config=0;
+        for (int i=0; i<(int)classical_boundary_spins.size(); i++){
+            if (classical_boundary_spins[i]->ising_val==+1){
+                this->boundary_config |= (1 << i);
+            }
+        }
+        diagonalise(boundary_config);
+    }
+            
 
     double expect_Sz(const Spin* s) const {
         auto i = this->spin_index(s);

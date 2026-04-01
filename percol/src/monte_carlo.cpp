@@ -28,6 +28,13 @@ void MCState::partition_spins(std::vector<Spin>& spins){
 
 
 
+static const char* spin_type(const Spin* s) {
+    if (s->deleted)      return "deleted";
+    if (s->is_quantum()) return "quantum";
+    for (Spin* nb : s->neighbours)
+        if (!nb->deleted && nb->is_quantum()) return "boundary";
+    return "classical";
+}
 
 //////////////////////////////////////////////////////////////////////
 /// IMPORTANT PHYSICS: THE MC MOVES
@@ -252,15 +259,14 @@ int try_flip_monopole_worm(MCSettings& mc, Tetra*tail_tetra, double target_lengt
     std::vector<Spin*> path;
     Tetra* head_tetra = tail_tetra;
     Spin* prev_spin  = nullptr;
-//    const int target_length = std::poisson_distribution<int>(target_length_mean)(mc.rng);
-    const int target_length = std::min(target_length_mean, 4.0);
+    const int target_length = 1+std::poisson_distribution<int>(target_length_mean)(mc.rng);
 
     while ((int)path.size() < target_length) {
         // nose-to-tail candidates: non-deleted, non-quantum spins in head with
         // ising_val == heal_val (not the spin we just came through)
         std::vector<Spin*> candidates;
         for (Spin* s : head_tetra->member_spins) {
-            if (s == prev_spin || s->deleted || s->is_quantum()) continue;
+            if (s == prev_spin || s->deleted || s->is_quantum() ) continue;
             if (s->ising_val == heal_val) candidates.push_back(s);
         }
         if (candidates.empty()) break;   // stuck — accept/reject current path
@@ -279,35 +285,34 @@ int try_flip_monopole_worm(MCSettings& mc, Tetra*tail_tetra, double target_lengt
         prev_spin = next_spin;
         head_tetra      = next_head;
         heal_val  = -heal_val;
+
+        if (head_tetra == tail_tetra) {
+            // closed loop!
+            break;
+        }
     }
 
-    if (path.size() < 2) return 0;
-
-    // If the final head contains a quantum spin, the last flip is an uncompensated
-    // boundary-config change whose energy we don't include in dE.
-    // Backtrack until classical.
-    bool final_is_classical=false;
-    while(!final_is_classical){   
-        final_is_classical=true;
-        for (Spin* m : head_tetra->member_spins) {
-            if (m->is_quantum()) {
-                final_is_classical=false;
-                break;
+    // backtrack until head contains no quantum spins
+    while (path.size() > 0){
+        bool head_is_classical=true;
+        for (auto s : head_tetra->member_spins){
+            if (s->deleted) continue;
+            if (s->is_quantum()) {
+                head_is_classical=false; break;
             }
         }
-        if (final_is_classical) break;
+        if (head_is_classical) break;
 
-
-        path.back()->ising_val *= -1;
-        Tetra* prev = (path.back()->owning_tetras[0] == head_tetra)
-                        ? path.back()->owning_tetras[1]
-                        : path.back()->owning_tetras[0];
+        Spin* s = path.back();
+        s->ising_val *= -1;
+        head_tetra = s->owning_tetras[0] == head_tetra ?
+            s->owning_tetras[1] : s->owning_tetras[0];
         path.pop_back();
-        if (path.empty()) return 0;
-        head_tetra = prev;
     }
 
-    if (path.size() < 2) return 0;
+    if (path.size() == 0) return 0;
+    if (path.size() == 1) {path[0]->ising_val*=-1; return 0;}
+
 
     // ΔE is purely from head and tail tetras (all intermediate tetras have no net field change).
     // Using sigma convention: E(tetra) = Jzz/2 * (Q²-4), so ΔE = Jzz/2 * ΔQ²
@@ -325,8 +330,8 @@ int try_flip_monopole_worm(MCSettings& mc, Tetra*tail_tetra, double target_lengt
     int accept = mc.uniform(mc.rng) < std::exp(-mc.beta * (dE));
     if (!accept) {
         for (Spin* s : path) s->ising_val *= -1;
-        return 0;
     }
+
 
 
     // Update boundary configs of any quantum clusters adjacent to flipped spins.
@@ -340,11 +345,11 @@ int try_flip_monopole_worm(MCSettings& mc, Tetra*tail_tetra, double target_lengt
         for (Spin* nb : s->neighbours)
             if (!nb->deleted && nb->is_quantum() && nb->owning_cluster)
                 touched.insert(static_cast<QClusterMF*>(nb->owning_cluster));
+
     for (QClusterMF* qc : touched) {
         const double E_old = qc->energy();   // eigenvalue before boundary change
         auto Sz_old = qc->get_Sz_expect(); // all <Sz> vals
         
-
         QClusterMF::BoundaryConfig new_cfg = 0;
         for (int i = 0; i < (int)qc->classical_boundary_spins.size(); i++)
             if (qc->classical_boundary_spins[i]->ising_val == +1)
@@ -353,17 +358,48 @@ int try_flip_monopole_worm(MCSettings& mc, Tetra*tail_tetra, double target_lengt
 
         // Find eigenstate in new basis with energy closest to E_old (must be exact match!)
         int best_idx = 0;
-        double best_dist = std::abs(qc->eigenvalues[0] - E_old) + (qc->get_Sz_expect(0) - Sz_old).norm();
+        double best_dist = std::abs(qc->eigenvalues[0] - E_old); //+ (qc->get_Sz_expect(0) - Sz_old).norm();
         for (int n = 1; n < (int)qc->eigenvalues.size(); n++) {
-            double d = std::abs(qc->eigenvalues[n] - E_old) + (qc->get_Sz_expect(n) - Sz_old).norm();
+            double d = std::abs(qc->eigenvalues[n] - E_old); //+ (qc->get_Sz_expect(n) - Sz_old).norm();
             if (d < best_dist) { best_dist = d; best_idx = n; }
         }
         if (best_dist > 1e-8) {
             std::cerr<<"Original E:"<<E_old;
             std::cerr<<"\nBest E:"<<qc->eigenvalues[best_idx]<<"\n";
+            printf("Spectrum:\n");
+            for (auto e : qc->eigenvalues){
+                printf("%f ",e);
+            }
+            printf("\nCluster boundaries:\n");
+            for (int i=0; i<(int)qc->classical_boundary_spins.size(); i++){
+                printf("%d %p\n", i, (void*)qc->classical_boundary_spins[i]);
+            }
+            printf("Path:\n");
+            uint32_t changed_spins=0;
+            for (auto s : path){
+                int i_match = -1;
+                for (int i=0; i<(int)qc->classical_boundary_spins.size() && i_match <0; i++){
+                    if(qc->classical_boundary_spins[i] == s) i_match=i;
+                }
+                if (i_match>=0){
+                    changed_spins |= (1<<i_match);
+                }
+                printf("%p %d sigma=%d\n", (void*)s, i_match, s->ising_val);
+            }
+
+
+            printf("New boundary: %x\n", new_cfg); 
+
+
+            qc->diagonalise(new_cfg ^ changed_spins);
+            printf("Old Spectrum:\n");
+            for (auto e : qc->eigenvalues){
+                printf("%f ",e);
+            }
             throw std::runtime_error("Bad cluster reassignment");
         }
         qc->eigenstate_idx = best_idx;
+
     }
 
     return 1;
@@ -772,48 +808,22 @@ double MCState::energy(){
 }
 
 
-void MCStateMF::partition_spins(std::vector<Spin>& spins) {
-    std::set<Spin*> boundary_spin_set;
 
-    for (const auto& c : clusters) {
-        for (const auto s : c.spins) {
-            for (const auto nb : s->neighbours) {
-                if (!nb->deleted && nb->owning_cluster == nullptr)
-                    boundary_spin_set.insert(nb);
-            }
-        }
-    }
-
-    for (auto& s : spins) {
-        if (!s.deleted && !s.is_quantum() && !boundary_spin_set.contains(static_cast<Spin*>(&s))) {
-            classical_spins.push_back(&s);
-        }
-    }
-
-    this->boundary_spins.reserve(boundary_spin_set.size());
-    for (auto s : boundary_spin_set)
-        this->boundary_spins.push_back(s);
-
-    find_intact_tetras(classical_spins, intact_tetras);
-}
-
-
-
-void find_intact_tetras(const std::vector<Spin*>& classical_spins,
-        std::vector<Tetra*>& intact_tetras)
+void find_class_tetras(const std::vector<Spin>& spins,
+        std::vector<Tetra*>& classical_tetras)
 {
 
-    // Build the static list of fully-classical tetrahedra (intact = no deleted or quantum
+    // Build the static list of fully-classical tetrahedra (intact = no quantum
     // member spins).  Q values change during the simulation but intact status does not.
-    intact_tetras.resize(0);
+    classical_tetras.resize(0);
     std::unordered_set<Tetra*> seen_tetras;
-    for (Spin* s : classical_spins) {
-        for (Tetra* t : s->owning_tetras) {
+    for (auto s : spins) {
+        for (Tetra* t : s.owning_tetras) {
             if (!t || !seen_tetras.insert(t).second) continue;
-            bool intact = true;
+            bool all_class = true;
             for (Spin* m : t->member_spins)
-                if (m->deleted || m->is_quantum()) { intact = false; break; }
-            if (intact) intact_tetras.push_back(t);
+                if (m->is_quantum()) { all_class = false; break; }
+            if (all_class) classical_tetras.push_back(t);
         }
     }
 }
@@ -837,7 +847,7 @@ void MCStateMF::sweep(MCSettings& mc_) {
         mc_.accepted_worm += try_flip_worm(mc_, s);
     }
     if (mc_.moves & MOVE_MONOPOLE) {
-        auto monopoles = find_monopole_tetras(intact_tetras);
+        auto monopoles = find_monopole_tetras(class_tetras);
         if (!monopoles.empty()) {
             mc_.attempted_monopole += monopoles.size();
             // guess the length to go for: (N_classical / N_mon)^(1/3) ~ mean free path
@@ -859,6 +869,31 @@ void MCStateMF::sweep(MCSettings& mc_) {
         for (auto& qc : clusters)
             mc_.accepted_quantum += try_flip_cluster_state_MF(mc_, qc);
     }
+}
+
+void MCStateMF::partition_spins(std::vector<Spin>& spins) {
+    std::set<Spin*> boundary_spin_set;
+
+    for (const auto& c : clusters) {
+        for (const auto s : c.spins) {
+            for (const auto nb : s->neighbours) {
+                if (!nb->deleted && nb->owning_cluster == nullptr)
+                    boundary_spin_set.insert(nb);
+            }
+        }
+    }
+
+    for (auto& s : spins) {
+        if (!s.deleted && !s.is_quantum() && !boundary_spin_set.contains(static_cast<Spin*>(&s))) {
+            classical_spins.push_back(&s);
+        }
+    }
+
+    this->boundary_spins.reserve(boundary_spin_set.size());
+    for (auto s : boundary_spin_set)
+        this->boundary_spins.push_back(s);
+
+    find_class_tetras(spins, class_tetras);
 }
 
 template void MCStateMF::sweep<false>(MCSettings&);

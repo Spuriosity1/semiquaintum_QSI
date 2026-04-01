@@ -161,7 +161,7 @@ int main(int argc, char* argv[]) {
                   << state.classical_spins.size() << " Full classical spins\n"
                   << state.boundary_spins.size()  << " Boundary spins\n"
                   << state.clusters.size()         << " Quantum clusters\n"
-                  << state.intact_tetras.size()    << " Intact tetrahedra\n"
+                  << state.class_tetras.size()    << " Intact tetrahedra\n"
                   << "T = " << T << "\n";
     }
 
@@ -194,7 +194,7 @@ int main(int argc, char* argv[]) {
         else                state.sweep<false>(params);
 
         E_series[n] = state.energy();
-        M_series[n] = static_cast<double>(count_monopoles(state.intact_tetras));
+        M_series[n] = static_cast<double>(count_monopoles(state.class_tetras));
     }
 
     if (verbosity >= 1) {

@@ -106,7 +106,7 @@ struct MCState {
 // filters out a list of tetras with monopoles on them
 int classical_tetra_charge(const Tetra* t);
 std::vector<Tetra*> find_monopole_tetras(const std::vector<Tetra*>& intact_tetras);
-void find_intact_tetras(const std::vector<Spin*>& classical_spins,
+void find_class_tetras(const std::vector<Spin*>& classical_spins,
         std::vector<Tetra*>& intact_tetras);
 
 
@@ -120,7 +120,7 @@ struct MCStateMF {
     std::vector<Plaq*>    intact_plaqs;
     std::vector<Spin*>    classical_spins;  // type 4
     std::vector<Spin*>    boundary_spins;  // type 3
-    std::vector<Tetra*>   intact_tetras;   // fully-classical tetras (fixed after dilution)
+    std::vector<Tetra*>   class_tetras;   // fully-classical tetras (fixed after dilution)
     std::vector<QClusterMF> clusters;
 
 

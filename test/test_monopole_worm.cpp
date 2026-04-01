@@ -40,10 +40,10 @@ static const char* spin_type(const Spin* s) {
 static std::string tetra_desc(const Tetra* t,
                                const std::vector<Tetra*>& intact_tetras,
                                int Q_before, int Q_after) {
-    bool is_intact = false;
-    for (const Tetra* it : intact_tetras) if (it == t) { is_intact = true; break; }
+    bool is_classical = false;
+    for (const Tetra* it : intact_tetras) if (it == t) { is_classical = true; break; }
 
-    std::string s = std::string(is_intact ? "[intact] " : "[non-intact] ");
+    std::string s = std::string(is_classical ? "[classical] " : "[non-clasical] ");
     s += "Q: " + std::to_string(Q_before) + " → " + std::to_string(Q_after) + "  members:";
     for (Spin* m : t->member_spins) {
         s += "  ";
@@ -70,8 +70,9 @@ int main() {
     // p=0  : pure classical — formula must hold exactly.
     // p>0  : quantum clusters present — quantum energy changes show up as
     //         formula_failures, letting us gauge the adiabatic-following error.
-    for (double p : {0.0, 0.05, 0.10}) {
+    for (double p : {0.0, 0.01, 0.05}) {
         for (size_t trial = 0; trial < 8; trial++) {
+            printf("Test %d p=%f\n", (int)trial, p);
             const size_t seed = trial * 137 + 31;
 
             QClattice sc = initialise_lattice(4);
@@ -95,14 +96,9 @@ int main() {
 
             // Sync cluster boundary configs after randomisation.
             for (auto& qc : state.clusters) {
-                QClusterMF::BoundaryConfig cfg = 0;
-                for (int i = 0; i < (int)qc.classical_boundary_spins.size(); i++)
-                    if (qc.classical_boundary_spins[i]->ising_val == +1)
-                        cfg |= (1u << i);
-                qc.diagonalise(cfg);
+                qc.sync();
             }
 
-            auto& all_tetras = sc.get_objects<Tetra>();
             const double Jzz = ModelParams::get().Jzz;
 
             // Only query charge on tetras that are free of quantum members
@@ -113,19 +109,24 @@ int main() {
                 return true;
             };
 
-            for (Tetra* t : state.intact_tetras) {
+            for (Tetra* t : state.class_tetras) {
                 if (classical_tetra_charge(t) == 0) continue;
+                assert(has_no_quantum(t));
 
                 // Snapshot charges of every quantum-free tetrahedron.
-                std::vector<int> Q_before(all_tetras.size(), 0);
-                for (size_t i = 0; i < all_tetras.size(); i++)
-                    if (has_no_quantum(&all_tetras[i]))
-                        Q_before[i] = classical_tetra_charge(&all_tetras[i]);
+                std::vector<int> Q_before(state.class_tetras.size(), 0);
+                for (size_t i = 0; i < state.class_tetras.size(); i++){
+                    auto t = state.class_tetras[i];
+                    Q_before[i] = classical_tetra_charge(t);
+                }
 
                 const double E_before = state.energy();
 
                 // Use a moderate mean worm length to exercise intermediate tetras.
-                if (!try_flip_monopole_worm(mc, t, 12.0)) continue;
+                if (!try_flip_monopole_worm(mc, t, 12.0)){
+                    assert(state.energy() == E_before);
+                    continue;
+                }
                 total_accepted++;
 
                 const double E_after = state.energy();
@@ -137,9 +138,10 @@ int main() {
                 struct ChangedTetra { size_t idx; int Q_i; int Q_f; };
                 std::vector<ChangedTetra> changed;
 
-                for (size_t i = 0; i < all_tetras.size(); i++) {
-                    if (!has_no_quantum(&all_tetras[i])) continue;
-                    int Qf = classical_tetra_charge(&all_tetras[i]);
+                for (size_t i = 0; i < state.class_tetras.size(); i++){
+                    auto t = state.class_tetras[i];
+                    int Qf = classical_tetra_charge(t);
+
                     if (Qf != Q_before[i]) {
                         dE_formula += (Jzz / 2.0) *
                             (double)(Qf * Qf - Q_before[i] * Q_before[i]);
@@ -160,8 +162,8 @@ int main() {
                               << "\n  Changed tetrahedra (" << n_changed << "):\n";
                     for (auto& c : changed) {
                         std::cerr << "    "
-                                  << tetra_desc(&all_tetras[c.idx],
-                                                state.intact_tetras,
+                                  << tetra_desc(state.class_tetras[c.idx],
+                                                state.class_tetras,
                                                 c.Q_i, c.Q_f)
                                   << "\n";
                     }
@@ -177,8 +179,8 @@ int main() {
                               << "  Changed tetrahedra:\n";
                     for (auto& c : changed) {
                         std::cerr << "    "
-                                  << tetra_desc(&all_tetras[c.idx],
-                                                state.intact_tetras,
+                                  << tetra_desc(state.class_tetras[c.idx],
+                                                state.class_tetras,
                                                 c.Q_i, c.Q_f)
                                   << "\n";
                     }

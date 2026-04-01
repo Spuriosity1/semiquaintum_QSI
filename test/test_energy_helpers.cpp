@@ -370,7 +370,7 @@ int main(int argc, char** argv) {
             //
             // beta=0 is used so every move is accepted, maximising coverage.
             // ----------------------------------------------------------------
-            if (!state.intact_tetras.empty()) {
+            if (!state.class_tetras.empty()) {
 
                 std::cout<<"Check F"<<std::endl;
                 MCSettings mc_mon;
@@ -382,11 +382,11 @@ int main(int argc, char** argv) {
 
                 const auto spin_backup = save_spins();
 
-                for (Tetra* t : find_monopole_tetras(state.intact_tetras)) {
+                for (Tetra* t : find_monopole_tetras(state.class_tetras)) {
                     // Save per-tetra charges and total energy before the move.
-                    std::vector<int> Q_old(state.intact_tetras.size());
-                    for (int i = 0; i < (int)state.intact_tetras.size(); i++)
-                        Q_old[i] = classical_tetra_charge(state.intact_tetras[i]);
+                    std::vector<int> Q_old(state.class_tetras.size());
+                    for (int i = 0; i < (int)state.class_tetras.size(); i++)
+                        Q_old[i] = classical_tetra_charge(state.class_tetras[i]);
                     const double E_before = state.energy();
 
                     const double E_class_before = state.classical_energy();
@@ -410,8 +410,8 @@ int main(int argc, char** argv) {
                     // Any discrepancy means Metropolis used the wrong dE.
                     const double Jzz_val = ModelParams::get().Jzz;
                     double dE_tetra = 0.0;
-                    for (int i = 0; i < (int)state.intact_tetras.size(); i++) {
-                        int Q_new = classical_tetra_charge(state.intact_tetras[i]);
+                    for (int i = 0; i < (int)state.class_tetras.size(); i++) {
+                        int Q_new = classical_tetra_charge(state.class_tetras[i]);
                         dE_tetra += (Jzz_val / 2.0) * (Q_new*Q_new - Q_old[i]*Q_old[i]);
                     }
                     if (!check("F(dE):           monopole worm dE formula", dE_tetra, E_true - E_before)){
