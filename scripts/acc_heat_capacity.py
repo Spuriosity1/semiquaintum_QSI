@@ -150,8 +150,10 @@ def main(fnames):
 
         n_spins = load_n_spins(fnames[0])
 
-        # var_j for seed 0 (intensive), accumulated for SE estimate across MC seeds
-        var_j      = within_sum / n_sum / n_spins**2
+        # var_j = Var(E_total) for seed 0, accumulated for SE estimate across MC seeds.
+        # Stored as extensive (not divided by n_spins) so the plot formula
+        # C/N = var / (T² × N) is consistent with raw and per-disorder files.
+        var_j      = within_sum / n_sum
         var_sq_sum = var_j**2
 
         for fname in files[1:]:
@@ -164,7 +166,7 @@ def main(fnames):
             within_sum += w_j
             E_sum      += E_j
             n_sum      += n_j
-            var_j       = w_j / n_j / n_spins**2
+            var_j       = w_j / n_j
             var_sq_sum += var_j**2
 
         K_mc = len(files)
@@ -173,8 +175,8 @@ def main(fnames):
         # For a single seed this equals the original E2 exactly.
         E2_corrected = within_sum + E_sum**2 / n_sum
 
-        e_mean = E_sum  / n_sum / n_spins
-        var    = within_sum / n_sum / n_spins**2
+        e_mean = E_sum  / n_sum          # extensive <E_total>
+        var    = within_sum / n_sum      # Var(E_total)
 
         # Write per-disorder file
         out = per_disorder_name(files[0], len(files))

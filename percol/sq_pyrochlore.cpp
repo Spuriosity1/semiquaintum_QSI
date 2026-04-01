@@ -231,10 +231,10 @@ int main (int argc, char *argv[]) {
     /// MAIN EXECUTION LOOP /////////////////////
     
     for (size_t i=0; i<n_step; i++){
+        params.beta /= factor;
         const double T = 1./params.beta;
         em.new_T(T);
         sm.new_T(T);
-        params.beta /= factor;
 
         for (size_t n=0; n<nburn; n++){
             if (exact_boundary) state.sweep<true>(params);
