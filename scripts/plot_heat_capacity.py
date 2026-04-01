@@ -84,7 +84,25 @@ def load_E_data(fname):
             return T, E_mean, var, se_E, se_C_times_T2
 
 
-def plot_file(fname, axes, color, label):
+def compute_entropy(T, C_per_N):
+    """
+    Integrate C(T)/T dT from T_min upward (trapezoidal rule in linear T).
+    Returns S_per_N with S=0 at T_min.
+    """
+    idx = np.argsort(T)
+    T_s = T[idx]
+    C_s = C_per_N[idx]
+    integrand = C_s / T_s
+    S = np.zeros_like(T_s)
+    for i in range(1, len(T_s)):
+        S[i] = S[i-1] + 0.5 * (integrand[i-1] + integrand[i]) * (T_s[i] - T_s[i-1])
+    # map back to original ordering
+    S_out = np.empty_like(S)
+    S_out[idx] = S
+    return S_out
+
+
+def plot_file(fname, axes_map, color, label):
     N = load_metadata(fname)
 
     T, E_mean, var_mean, se_E, se_C_raw = load_E_data(fname)
@@ -97,22 +115,31 @@ def plot_file(fname, axes, color, label):
     if se_C is not None:
         se_C = se_C[idx]
 
-    ax_C = axes
+    if 'C' in axes_map:
+        ax = axes_map['C']
+        ax.plot(T, C, marker="o", markersize=3, color=color, label=label)
+        if se_C is not None:
+            ax.fill_between(T, C - se_C, C + se_C, alpha=0.2, color=color)
 
-    ax_C.plot(T, C, marker="o", markersize=3, color=color, label=label)
-    if se_C is not None:
-        ax_C.fill_between(T, C - se_C, C + se_C, alpha=0.2, color=color)
+    if 'E' in axes_map:
+        ax = axes_map['E']
+        E_per_N = E_mean / N
+        se_E_per_N = se_E / N
+        ax.plot(T, E_per_N, marker="o", markersize=3, color=color, label=label)
+        ax.fill_between(T, E_per_N - se_E_per_N, E_per_N + se_E_per_N,
+                        alpha=0.2, color=color)
 
-#    ax_E.plot(T, E_mean / N, marker="o", markersize=3, color=color, label=label)
-#    ax_E.fill_between(T, (E_mean - se_E) / N, (E_mean + se_E) / N, alpha=0.2, color=color)
+    if 'S' in axes_map:
+        ax = axes_map['S']
+        S = compute_entropy(T, C)
+        ax.plot(T, S, marker="o", markersize=3, color=color, label=label)
 
 
 def main(args):
 
-    fnames = args.files 
+    fnames = args.files
     labels = args.labels
-
-    fig, axes = plt.subplots(figsize=(3.5, 3))
+    plots  = args.plot
 
     cmap   = plt.colormaps["tab10"]
     colors = [cmap(i) for i in range(len(fnames))]
@@ -120,28 +147,58 @@ def main(args):
     if labels is None:
         labels = [os.path.basename(fname) for fname in fnames]
 
+    axes_map = {}
+
+    if 'C' in plots:
+        fig_C, ax_C = plt.subplots(figsize=(3.5, 3))
+        axes_map['C'] = ax_C
+
+    if 'E' in plots:
+        fig_E, ax_E = plt.subplots(figsize=(3.5, 3))
+        axes_map['E'] = ax_E
+
+    if 'S' in plots:
+        fig_S, ax_S = plt.subplots(figsize=(3.5, 3))
+        axes_map['S'] = ax_S
+
     for fname, color, label in zip(fnames, colors, labels):
-        plot_file(fname, axes, color, label)
+        plot_file(fname, axes_map, color, label)
 
-    ax_C = axes
-    ax_C.set_ylabel("Specific heat $C/N$")
-    ax_C.set_xlabel("Temperature $T$")
-    ax_C.set_xscale("log")
-    if (args.y_logscale):
-        ax_C.set_yscale("log")
-    ax_C.grid(True)
-    ax_C.legend(fontsize=7)
+    if 'C' in axes_map:
+        ax = axes_map['C']
+        ax.set_ylabel("Specific heat $C/N$")
+        ax.set_xlabel("Temperature $T$")
+        ax.set_xscale("log")
+        if args.y_logscale:
+            ax.set_yscale("log")
+        ax.grid(True)
+        ax.legend(fontsize=7)
+        if args.xlim is not None:
+            ax.set_xlim(args.xlim)
+        ax.figure.tight_layout()
 
-    if (args.xlim is not None):
-        print(args.xlim)
-        ax_C.set_xlim(args.xlim)
+    if 'E' in axes_map:
+        ax = axes_map['E']
+        ax.set_ylabel(r"Mean energy $\langle E \rangle / N$")
+        ax.set_xlabel("Temperature $T$")
+        ax.set_xscale("log")
+        ax.grid(True)
+        ax.legend(fontsize=7)
+        if args.xlim is not None:
+            ax.set_xlim(args.xlim)
+        ax.figure.tight_layout()
 
-#    ax_E.set_ylabel("Mean energy $\\langle E \\rangle / N$")
-#    ax_E.set_xscale("log")
-#    ax_E.grid(True)
-#    ax_E.legend(fontsize=7)
+    if 'S' in axes_map:
+        ax = axes_map['S']
+        ax.set_ylabel(r"Entropy $S/N$ (integrated from $T_\mathrm{min}$)")
+        ax.set_xlabel("Temperature $T$")
+        ax.set_xscale("log")
+        ax.grid(True)
+        ax.legend(fontsize=7)
+        if args.xlim is not None:
+            ax.set_xlim(args.xlim)
+        ax.figure.tight_layout()
 
-    fig.tight_layout()
     plt.show()
 
 
@@ -152,12 +209,14 @@ if __name__ == "__main__":
         epilog=__doc__,
     )
 
-
     parser.add_argument("files", nargs='+', help="output hdf5 files")
     parser.add_argument("--labels", nargs='+', help="labels for plot")
     parser.add_argument("--xlim", nargs=2, help="x limits", type=float)
     parser.add_argument("--y_logscale", action="store_true")
-    args=parser.parse_args()
-
+    parser.add_argument("--plot", nargs='+', default=['C'],
+                        choices=['C', 'E', 'S'],
+                        metavar='{C,E,S}',
+                        help="figures to show: C=heat capacity, E=mean energy, S=integrated entropy (default: C)")
+    args = parser.parse_args()
 
     main(args)

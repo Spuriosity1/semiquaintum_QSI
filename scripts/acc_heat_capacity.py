@@ -113,6 +113,11 @@ def disorder_avg_name(representative_file, n_disorder):
     return os.path.join(os.path.dirname(representative_file), out)
 
 
+def load_n_spins(fname):
+    """Return N, the (mean) number of non-deleted spins in the realisation."""
+    with h5py.File(fname, "r") as f:
+        N = float(np.array(f["/geometry/n_spins"]))
+    return N
 
 def main(fnames):
     if not fnames:
@@ -120,7 +125,6 @@ def main(fnames):
         sys.exit(1)
 
     check_compatibility(fnames)
-    n_spins = expected_n_spins(fnames[0])
 
     # Group by disorder seed
     groups = defaultdict(list)
@@ -143,11 +147,16 @@ def main(fnames):
         # scatter when seeds are stuck in different metastable states at low T.
         within_sum = E2_j - E_sum**2 / n_sum
 
+
+        n_spins = load_n_spins(fnames[0])
+
         # var_j for seed 0 (intensive), accumulated for SE estimate across MC seeds
         var_j      = within_sum / n_sum / n_spins**2
         var_sq_sum = var_j**2
 
         for fname in files[1:]:
+            n_spins = load_n_spins(fnames[0])
+
             T, E_j, E2_j, n_j = load_raw(fname)
             if not np.allclose(T, T_ref):
                 raise ValueError(f"T_list mismatch in {fname}")

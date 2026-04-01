@@ -62,7 +62,7 @@ struct MCSettings {
     double accepted_worm=0;
     double accepted_monopole=0;
 
-    size_t attempted_monopole;
+    size_t attempted_monopole=0;
     size_t sweeps_attempted=0;
 
     void reset_acceptance(){
@@ -71,6 +71,7 @@ struct MCSettings {
         accepted_quantum=0;
         accepted_worm=0;
         accepted_monopole=0;
+        attempted_monopole=0;
         sweeps_attempted=0;
     }
 
@@ -78,7 +79,9 @@ struct MCSettings {
         std::ostringstream os;
         os << "Acc R="<<100.0 * accepted_plaq/sweeps_attempted<<"%\t"
          << "Acc W="<< 100.0 * accepted_worm/sweeps_attempted<<"%\t"
-         << "Acc M="<< 100.0 * accepted_monopole/sweeps_attempted<<"%\t"
+         << "Acc M="<< (attempted_monopole > 0
+                        ? std::to_string(100.0 * accepted_monopole/attempted_monopole) + "%"
+                        : std::string("n/a"))<<"\t"
          << "Acc C="<< 100.0 * accepted_classical/sweeps_attempted<<"%\t"
          << "Acc B="<< 100.0 * accepted_boundary/sweeps_attempted<<"%\t"
          << "Acc Q="<< 100.0 * accepted_quantum/sweeps_attempted<<"%";
