@@ -10,6 +10,12 @@
 // Separately checks that at most 2 tetrahedra change their charge per worm
 // (the head and tail; all intermediate tetras must cancel).
 //
+// Also verifies the pyrochlore geometry invariant: any boundary spin on the
+// worm path is paired with a second boundary spin of the same cluster sharing
+// a quantum tetrahedron, with opposite heal_val.  Their Δσ contributions to
+// every quantum spin in that tetrahedron cancel exactly, so H_cluster — and
+// therefore the cluster eigenvalues — are unchanged by an accepted worm.
+//
 // On any failure the classical / boundary / quantum makeup of every affected
 // tetrahedron is printed so the source of the error can be pinpointed.
 //
@@ -63,9 +69,10 @@ int main() {
     ModelParams::get().Jyy = 0.1;
 
     constexpr double EPSILON = 1e-9;
-    int total_accepted   = 0;
-    int formula_failures = 0;   // |dE_formula − dE_true| > EPSILON
-    int count_failures   = 0;   // more than 2 tetras changed charge
+    int total_accepted    = 0;
+    int formula_failures  = 0;   // |dE_formula − dE_true| > EPSILON
+    int count_failures    = 0;   // more than 2 tetras changed charge
+    int spectrum_failures = 0;   // cluster eigenvalues changed after worm
 
     // p=0  : pure classical — formula must hold exactly.
     // p>0  : quantum clusters present — quantum energy changes show up as
@@ -121,6 +128,16 @@ int main() {
                 }
 
                 const double E_before = state.energy();
+
+                // Snapshot cluster eigenvalues before the worm.
+                // Invariant (checked below): an accepted worm never changes any
+                // cluster's Hamiltonian, so these must be identical afterwards.
+                std::vector<std::vector<double>> evals_before;
+                evals_before.reserve(state.clusters.size());
+                for (const auto& qc : state.clusters) {
+                    const auto& ev = qc.eigenvalues;
+                    evals_before.emplace_back(ev.data(), ev.data() + ev.size());
+                }
 
                 // Use a moderate mean worm length to exercise intermediate tetras.
                 if (!try_flip_monopole_worm(mc, t, 12.0)){
@@ -185,14 +202,46 @@ int main() {
                                   << "\n";
                     }
                 }
+
+                // ── Check 3: cluster spectra unchanged ────────────────────
+                // Pyrochlore geometry invariant: every boundary spin on the
+                // worm path is paired with a second boundary spin of the same
+                // cluster that shares a quantum tetrahedron and carries the
+                // opposite heal_val.  All four members of a pyrochlore tetra
+                // are mutually adjacent, so the pair's Δσ contributions to
+                // H_boundary cancel on every quantum spin in that tetra.
+                // H_cluster is therefore identical before and after the worm,
+                // and diagonalise(new_cfg) must return the same eigenvalues.
+                for (size_t ci = 0; ci < state.clusters.size(); ci++) {
+                    const auto& ev_new = state.clusters[ci].eigenvalues;
+                    const auto& ev_old = evals_before[ci];
+                    bool changed_spectrum = false;
+                    for (int n = 0; n < (int)ev_new.size() && !changed_spectrum; ++n)
+                        if (std::abs(ev_new[n] - ev_old[n]) > EPSILON)
+                            changed_spectrum = true;
+                    if (changed_spectrum) {
+                        ++spectrum_failures;
+                        std::cerr << std::fixed << std::setprecision(12)
+                                  << "SPECTRUM FAIL  p=" << p
+                                  << " trial=" << trial
+                                  << "  cluster " << ci
+                                  << "  (n_spins=" << state.clusters[ci].n_spins() << ")\n";
+                        for (int n = 0; n < (int)ev_new.size(); ++n)
+                            std::cerr << "    n=" << n
+                                      << "  old=" << ev_old[n]
+                                      << "  new=" << ev_new[n]
+                                      << "  diff=" << std::abs(ev_new[n] - ev_old[n]) << "\n";
+                    }
+                }
             }
         }
     }
 
-    std::cout << "Accepted=" << total_accepted
-              << "  Formula_failures=" << formula_failures
-              << "  Count_failures="   << count_failures
+    std::cout << "Accepted="         << total_accepted
+              << "  Formula_failures="  << formula_failures
+              << "  Count_failures="    << count_failures
+              << "  Spectrum_failures=" << spectrum_failures
               << "\n";
 
-    return (formula_failures + count_failures) > 0 ? 1 : 0;
+    return (formula_failures + count_failures + spectrum_failures) > 0 ? 1 : 0;
 }

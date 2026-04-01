@@ -106,8 +106,6 @@ struct MCState {
 // filters out a list of tetras with monopoles on them
 int classical_tetra_charge(const Tetra* t);
 std::vector<Tetra*> find_monopole_tetras(const std::vector<Tetra*>& intact_tetras);
-void find_class_tetras(const std::vector<Spin*>& classical_spins,
-        std::vector<Tetra*>& intact_tetras);
 
 
 

@@ -813,8 +813,8 @@ void find_class_tetras(const std::vector<Spin>& spins,
         std::vector<Tetra*>& classical_tetras)
 {
 
-    // Build the static list of fully-classical tetrahedra (intact = no quantum
-    // member spins).  Q values change during the simulation but intact status does not.
+    // Build the static list of non-quantum tetrahedra.
+    // Q values change during the simulation but intact status does not.
     classical_tetras.resize(0);
     std::unordered_set<Tetra*> seen_tetras;
     for (auto s : spins) {
