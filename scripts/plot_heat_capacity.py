@@ -14,8 +14,6 @@ plt.rcParams.update({
 })
 
 
-
-
 def load_metadata(fname):
     """Return N, the (mean) number of non-deleted spins in the realisation."""
     with h5py.File(fname, "r") as f:
