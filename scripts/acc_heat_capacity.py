@@ -97,6 +97,7 @@ def per_disorder_name(representative_file, n_merged):
     """Keep _dsX, replace _msM with _mergeN."""
     base = os.path.basename(representative_file)
     out = re.sub(r"_ms\d+", f"_merge{n_merged}", base)
+    out = re.sub(r"\.h5$", ".mavg.h5", out)
     if out == base:
         raise ValueError(f"No _msN tag in: {base}")
     return os.path.join(os.path.dirname(representative_file), out)
@@ -134,6 +135,8 @@ def main(fnames):
     T_ref        = None
     disorder_E   = []   # intensive <e> per disorder seed
     disorder_var = []   # intensive Var(e) per disorder seed
+
+    disorder_n_spins = [] # n spins per disorder seed
 
     for ds, files in sorted(groups.items()):
         T_this, E_sum, E2_j, n_sum = load_raw(files[0])
@@ -194,6 +197,7 @@ def main(fnames):
 
         disorder_E.append(e_mean)
         disorder_var.append(var)
+        disorder_n_spins.append(n_spins)
 
     # Disorder average
     K       = len(disorder_E)
@@ -205,13 +209,13 @@ def main(fnames):
     with h5py.File(out_avg, "w") as f:
         g = f.create_group("energy")
         g.create_dataset("T_list",     data=T_ref)
-        g.create_dataset("E",          data=E_arr.mean(axis=0))
-        g.create_dataset("E_sq",       data=(E_arr**2).mean(axis=0))
-        g.create_dataset("var",        data=var_arr.mean(axis=0))
-        g.create_dataset("var_sq",     data=(var_arr**2).mean(axis=0))
+        g.create_dataset("E",          data=E_arr.sum(axis=0))
+        g.create_dataset("E_sq",       data=(E_arr**2).sum(axis=0))
+        g.create_dataset("var",        data=var_arr.sum(axis=0))
+        g.create_dataset("var_sq",     data=(var_arr**2).sum(axis=0))
         g.create_dataset("n_disorder", data=np.uint64(K))
         gg = f.create_group("geometry")
-        gg.create_dataset("n_spins",   data=n_spins)
+        gg.create_dataset("n_spins", data=disorder_n_spins)
     print(f"Disorder average of {K} seed(s) → {out_avg}")
 
 
