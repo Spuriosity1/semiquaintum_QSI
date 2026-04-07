@@ -290,7 +290,8 @@ int main (int argc, char *argv[]) {
 
     std::filesystem::path out_dir = ap.get<std::string>("--output_dir");
     
-    const std::string prefix  = ap.get<std::string>("--prefix");
+    const std::string prefix  = ap.get<std::string>("--prefix") + (classical_only ? "_class" : "");
+
     auto file_path = out_dir/make_filename(L, p, dseed, mseed, prefix, "h5");
 
     hid_t file_id = H5Fcreate(file_path.string().c_str(), H5F_ACC_TRUNC, H5P_DEFAULT, H5P_DEFAULT);
