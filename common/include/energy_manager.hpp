@@ -63,54 +63,71 @@ inline void energy_manager::save(const std::filesystem::path& file_path){
 }
 
 inline void energy_manager::write_group(hid_t file_id, const char* group_name){
-    hid_t data_group = H5Gcreate2(file_id, group_name,
-            H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT);
-    if (data_group < 0) {
-        throw std::runtime_error("Failed to create group");
-    }
-
-    // All vectors must have the same length
-    const hsize_t dims[1] = { E.size() };
-    hid_t dataspace_id = H5Screate_simple(1, dims, NULL);
-    if (dataspace_id < 0) {
-        H5Gclose(data_group);
-        throw std::runtime_error("Failed to create dataspace");
-    }
-
-    auto write_dataset = [&](const char* name,
-            hid_t type,
-            const void* data)
-    {
-        hid_t dataset_id = H5Dcreate2(data_group, name, type,
-                dataspace_id,
+    // Open existing group or create a new one.
+    hid_t data_group;
+    if (H5Lexists(file_id, group_name, H5P_DEFAULT) > 0) {
+        data_group = H5Gopen2(file_id, group_name, H5P_DEFAULT);
+    } else {
+        data_group = H5Gcreate2(file_id, group_name,
                 H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT);
-        if (dataset_id < 0) {
-            H5Sclose(dataspace_id);
-            H5Gclose(data_group);
-            throw std::runtime_error(std::string("Failed to create dataset ") + name);
-        }
+    }
+    if (data_group < 0)
+        throw std::runtime_error(std::string("Failed to open/create group ") + group_name);
 
-        herr_t status = H5Dwrite(dataset_id, type,
-                H5S_ALL, H5S_ALL,
-                H5P_DEFAULT, data);
+    const hsize_t n_new = E.size();
 
-        H5Dclose(dataset_id);
+    // Append n_new entries to dataset `name`.  If the dataset does not exist
+    // yet it is created with chunked/unlimited storage so future appends work.
+    auto append_dataset = [&](const char* name, hid_t type, const void* data) {
+        if (H5Lexists(data_group, name, H5P_DEFAULT) > 0) {
+            // Dataset exists — extend it and write new data at the end.
+            hid_t ds = H5Dopen2(data_group, name, H5P_DEFAULT);
+            if (ds < 0) throw std::runtime_error(std::string("Failed to open dataset ") + name);
 
-        if (status < 0) {
-            H5Sclose(dataspace_id);
-            H5Gclose(data_group);
-            throw std::runtime_error(std::string("Failed to write dataset ") + name);
+            hid_t fspace = H5Dget_space(ds);
+            hsize_t cur[1];
+            H5Sget_simple_extent_dims(fspace, cur, nullptr);
+            H5Sclose(fspace);
+
+            const hsize_t new_size[1] = { cur[0] + n_new };
+            H5Dset_extent(ds, new_size);
+
+            fspace = H5Dget_space(ds);
+            const hsize_t offset[1] = { cur[0] };
+            const hsize_t count[1]  = { n_new };
+            H5Sselect_hyperslab(fspace, H5S_SELECT_SET, offset, nullptr, count, nullptr);
+            hid_t mspace = H5Screate_simple(1, count, nullptr);
+            herr_t st = H5Dwrite(ds, type, mspace, fspace, H5P_DEFAULT, data);
+            H5Sclose(mspace);
+            H5Sclose(fspace);
+            H5Dclose(ds);
+            if (st < 0) throw std::runtime_error(std::string("Failed to append dataset ") + name);
+        } else {
+            // Dataset does not exist — create with chunked/unlimited dimensions.
+            const hsize_t maxdims[1] = { H5S_UNLIMITED };
+            const hsize_t chunk[1]   = { n_new > 0 ? n_new : 1 };
+            hid_t space = H5Screate_simple(1, &n_new, maxdims);
+            hid_t dcpl  = H5Pcreate(H5P_DATASET_CREATE);
+            H5Pset_chunk(dcpl, 1, chunk);
+            hid_t ds = H5Dcreate2(data_group, name, type, space,
+                                   H5P_DEFAULT, dcpl, H5P_DEFAULT);
+            if (ds < 0) {
+                H5Pclose(dcpl); H5Sclose(space); H5Gclose(data_group);
+                throw std::runtime_error(std::string("Failed to create dataset ") + name);
+            }
+            herr_t st = H5Dwrite(ds, type, H5S_ALL, H5S_ALL, H5P_DEFAULT, data);
+            H5Pclose(dcpl);
+            H5Sclose(space);
+            H5Dclose(ds);
+            if (st < 0) throw std::runtime_error(std::string("Failed to write dataset ") + name);
         }
     };
 
-    // Write all datasets
-    write_dataset("E",       H5T_NATIVE_DOUBLE, E.data());
-    write_dataset("E2",      H5T_NATIVE_DOUBLE, E2.data());
-    write_dataset("T_list",  H5T_NATIVE_DOUBLE, T_list.data());
-    write_dataset("n_samples", H5T_NATIVE_ULLONG, n_samples.data());
+    append_dataset("E",         H5T_NATIVE_DOUBLE,  E.data());
+    append_dataset("E2",        H5T_NATIVE_DOUBLE,  E2.data());
+    append_dataset("T_list",    H5T_NATIVE_DOUBLE,  T_list.data());
+    append_dataset("n_samples", H5T_NATIVE_ULLONG,  n_samples.data());
 
-    // Cleanup
-    H5Sclose(dataspace_id);
     H5Gclose(data_group);
 }
 

@@ -37,3 +37,9 @@ dump_bin = executable('sq_pyrochlore_dump', 'sq_pyrochlore_dump.cpp',
   dependencies: [main_deps, eigen_dep, hdf5_dep]
  )
 
+muca_bin = executable('sq_pyrochlore_muca', 'sq_pyrochlore_muca.cpp',
+  include_directories: percol_inc,
+  link_with: [percol_lib],
+  dependencies: [main_deps, eigen_dep, hdf5_dep]
+ )
+

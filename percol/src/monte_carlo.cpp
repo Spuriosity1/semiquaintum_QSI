@@ -41,21 +41,42 @@ static const char* spin_type(const Spin* s) {
 ///
 /// There are four kinds of spins.
 /// 1. deleted (trivial) spins, these do not count for anything.
-/// 2. quantum spins. These are close enough to defects 
+/// 2. quantum spins. These are close enough to defects
 ///    for the first order physics to be important.
-/// 3. 'boundary' spins. These are classical neighbours of quantum spins. 
+/// 3. 'boundary' spins. These are classical neighbours of quantum spins.
 /// 4 . Fully classical spins with only classical neighbours.
+
+// Centralised accept-reject used by all moves.
+// Canonical mode (mc.muca == nullptr): Boltzmann factor exp(−β dE) × hastings.
+// MUCA mode     (mc.muca != nullptr): exp(lnG[k_old] − lnG[k_new]) × hastings.
+// apply_fn() commits the state change; mc.muca->E_current is updated on accept.
+// Returns 1 on accept, 0 on reject.  Out-of-range energy → always reject.
+template<typename ApplyFn>
+static int muca_accept(MCSettings& mc, double dE, double hastings, ApplyFn&& apply_fn) {
+    double log_acc;
+    double E_new = mc.muca ? mc.muca->E_current + dE : 0.0;
+    if (mc.muca == nullptr) {
+        log_acc = -mc.beta * dE + std::log(hastings);
+    } else {
+        int k_old = mc.muca->energy_bin(mc.muca->E_current);
+        int k_new = mc.muca->energy_bin(E_new);
+        if (k_old < 0 || k_new < 0) return 0;   // reflecting boundary
+        log_acc = mc.muca->lnG[k_old] - mc.muca->lnG[k_new] + std::log(hastings);
+    }
+    if (mc.uniform(mc.rng) < std::exp(log_acc)) {
+        apply_fn();
+        if (mc.muca) mc.muca->E_current = E_new;
+        return 1;
+    }
+    return 0;
+}
 
 // Move 1: single-spin Metropolis on a fully classical (type 4) spin.
 // ΔE = −2 * Jzz * s * Σ_{classical neighbours} nb   (flipping negates all bonds).
 int try_flip_classical(MCSettings& mc, Spin* s) {
     const double Jzz = ModelParams::get().Jzz;
-    double dE = -2.0 * classical_bond_energy(s, Jzz); // flipping negates the bond energy
-    int accept = mc.uniform(mc.rng) < std::exp(-mc.beta * dE);
-
-    if (accept) s->ising_val *= -1;
-
-    return accept;
+    double dE = -2.0 * classical_bond_energy(s, Jzz);
+    return muca_accept(mc, dE, 1.0, [&]{ s->ising_val *= -1; });
 }
 
 // Move 1a: simultaneous flip of all 6 spins on a complete hexagonal plaquette.
@@ -353,9 +374,23 @@ int try_flip_monopole_worm(MCSettings& mc, Tetra*tail_tetra, double target_lengt
 
     // --- Metropolis-Hastings ---
     const double hastings = (double)n_tail_candidates / (double)n_head_candidates;
-    int accept = mc.uniform(mc.rng) < std::exp(-mc.beta * dE) * hastings;
-    if (!accept) {
-        for (Spin* s : path) s->ising_val *= -1;
+    {
+        double E_new = mc.muca ? mc.muca->E_current + dE : 0.0;
+        double log_acc;
+        if (mc.muca == nullptr) {
+            log_acc = -mc.beta * dE + std::log(hastings);
+        } else {
+            int k_old = mc.muca->energy_bin(mc.muca->E_current);
+            int k_new = mc.muca->energy_bin(E_new);
+            if (k_old < 0 || k_new < 0) { for (Spin* s : path) s->ising_val *= -1; return 0; }
+            log_acc = mc.muca->lnG[k_old] - mc.muca->lnG[k_new] + std::log(hastings);
+        }
+        if (mc.uniform(mc.rng) < std::exp(log_acc)) {
+            if (mc.muca) mc.muca->E_current = E_new;
+        } else {
+            for (Spin* s : path) s->ising_val *= -1;
+            return 0;
+        }
     }
 
 
@@ -428,7 +463,7 @@ int try_flip_monopole_worm(MCSettings& mc, Tetra*tail_tetra, double target_lengt
 
     }
 
-    return accept;
+    return 1;
 }
 
 
@@ -641,20 +676,30 @@ int try_flip_cluster_state_MF(MCSettings& mc, QClusterMF& qc) {
     int old_idx = qc.eigenstate_idx;
     int dim = qc.hilbert_dim();
 
-    double Z = 0;
-    for (int n = 0; n < dim; n++)
-        Z += std::exp(-mc.beta * (qc.eigenvalues[n] + mf_interaction(qc, n)));
+    if (mc.muca == nullptr) {
+        // Canonical mode: Gibbs (Boltzmann) sampling — avoids self-loop bias at low T.
+        double Z = 0;
+        for (int n = 0; n < dim; n++)
+            Z += std::exp(-mc.beta * (qc.eigenvalues[n] + mf_interaction(qc, n)));
 
-    double r = mc.uniform(mc.rng) * Z;
-    double acc = 0;
-    int new_idx = dim - 1;
-    for (int n = 0; n < dim; n++) {
-        acc += std::exp(-mc.beta * (qc.eigenvalues[n] + mf_interaction(qc, n)));
-        if (acc >= r) { new_idx = n; break; }
+        double r = mc.uniform(mc.rng) * Z;
+        double acc = 0;
+        int new_idx = dim - 1;
+        for (int n = 0; n < dim; n++) {
+            acc += std::exp(-mc.beta * (qc.eigenvalues[n] + mf_interaction(qc, n)));
+            if (acc >= r) { new_idx = n; break; }
+        }
+
+        qc.eigenstate_idx = new_idx;
+        return new_idx != old_idx ? 1 : 0;
+    } else {
+        // MUCA mode: uniform proposal + MUCA acceptance.
+        // Avoids the Hastings correction that the Gibbs proposal would require.
+        int new_idx = std::uniform_int_distribution<int>(0, dim - 1)(mc.rng);
+        double dE = (qc.eigenvalues[new_idx] + mf_interaction(qc, new_idx))
+                  - (qc.eigenvalues[old_idx] + mf_interaction(qc, old_idx));
+        return muca_accept(mc, dE, 1.0, [&]{ qc.eigenstate_idx = new_idx; });
     }
-
-    qc.eigenstate_idx = new_idx;
-    return new_idx != old_idx ? 1 : 0;
 }
 
 
@@ -722,13 +767,11 @@ int try_flip_boundary_spin_MF_exact(MCSettings& mc, Spin* s) {
     }
 
     double dE_total = dE_classical + dE_quantum;
-    int accept = mc.uniform(mc.rng) < std::exp(-mc.beta * dE_total);
-    if (accept) {
+    return muca_accept(mc, dE_total, 1.0, [&]{
         s->ising_val *= -1;
         for (auto& u : updates)
             *u.qc = std::move(u.tmp);
-    }
-    return accept;
+    });
 }
 
 // Move 3 (QClusterMF): Metropolis flip of a boundary spin adjacent to QClusterMF clusters.
@@ -771,13 +814,11 @@ int try_flip_boundary_spin_MF(MCSettings& mc, Spin* s) {
         updates.push_back({qc, qc->boundary_config ^ (1u << bidx)});
     }
 
-    int accept = mc.uniform(mc.rng) < std::exp(-mc.beta * dE);
-    if (accept) {
+    return muca_accept(mc, dE, 1.0, [&]{
         s->ising_val *= -1;
         for (auto& u : updates)
             u.qc->diagonalise(u.new_config);  // O(1) cache lookup; updates eigenvalues + Sz_expect + boundary_config
-    }
-    return accept;
+    });
 }
 
 

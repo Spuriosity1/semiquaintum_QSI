@@ -48,12 +48,32 @@ inline MoveFlags parse_moves(const std::string& s) {
     return static_cast<MoveFlags>(f);
 }
 
+// MUCA / Wang-Landau context.  Owned by the driver (sq_pyrochlore_muca.cpp).
+// MCSettings holds a raw (non-owning) pointer; null → canonical Boltzmann mode.
+struct MUCAContext {
+    int    n_bins    = 0;
+    double E_min     = 0.0;
+    double bin_width = 0.0;   // (E_max − E_min) / n_bins
+    double E_current = 0.0;   // total energy, maintained incrementally by the move functions
+
+    std::vector<double>  lnG;   // log estimated density of states (converges during WL phase)
+    std::vector<int64_t> wl_H;  // WL visit histogram (reset after each WL iteration)
+
+    // Returns the bin index for energy E, or −1 if outside [E_min, E_max).
+    // A return of −1 causes the proposing move to be rejected (reflecting boundary).
+    int energy_bin(double E) const {
+        if (E < E_min || E >= E_min + bin_width * n_bins) return -1;
+        return static_cast<int>((E - E_min) / bin_width);
+    }
+};
+
 struct MCSettings {
     double beta;
     std::mt19937 rng;
     std::uniform_real_distribution<double> uniform{0.0, 1.0};
 
     MoveFlags moves = MOVE_ALL;
+    MUCAContext* muca = nullptr;  // null → canonical Boltzmann; non-null → MUCA mode
 
     double accepted_classical=0;
     double accepted_boundary=0;

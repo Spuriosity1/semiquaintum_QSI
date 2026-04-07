@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 
+import re
 import sys
 import h5py
 import numpy as np
@@ -104,7 +105,12 @@ def compute_entropy(T, C_per_N):
     return S_out
 
 
-def plot_file(fname, axes_map, color, label):
+def csv_stem(fname):
+    """Strip .h5 (including .davg.h5) suffix from basename."""
+    return re.sub(r'\.h5$', '', os.path.basename(fname))
+
+
+def plot_file(fname, axes_map, color, label, save_directory=None):
     N = load_metadata(fname)
 
     T, E_mean, var_mean, se_E, se_C_raw = load_E_data(fname)
@@ -117,6 +123,10 @@ def plot_file(fname, axes_map, color, label):
     if se_C is not None:
         se_C = se_C[idx]
 
+    E_per_N    = E_mean / N
+    se_E_per_N = se_E / N
+    S          = compute_entropy(T, C)
+
     if 'C' in axes_map:
         ax = axes_map['C']
         ax.plot(T, C, marker="o", markersize=3, color=color, label=label)
@@ -125,16 +135,39 @@ def plot_file(fname, axes_map, color, label):
 
     if 'E' in axes_map:
         ax = axes_map['E']
-        E_per_N = E_mean / N
-        se_E_per_N = se_E / N
         ax.plot(T, E_per_N, marker="o", markersize=3, color=color, label=label)
         ax.fill_between(T, E_per_N - se_E_per_N, E_per_N + se_E_per_N,
                         alpha=0.2, color=color)
 
     if 'S' in axes_map:
         ax = axes_map['S']
-        S = compute_entropy(T, C)
         ax.plot(T, S, marker="o", markersize=3, color=color, label=label)
+
+    if save_directory is not None:
+        stem   = csv_stem(fname)
+        nan_col = np.full_like(T, np.nan)
+
+        if 'C' in axes_map:
+            se_col = se_C if se_C is not None else nan_col
+            np.savetxt(
+                os.path.join(save_directory, stem + '.C.csv'),
+                np.column_stack([T, C, se_col]),
+                delimiter=',', header='T,C_per_N,se_C_per_N', comments='',
+            )
+
+        if 'E' in axes_map:
+            np.savetxt(
+                os.path.join(save_directory, stem + '.E.csv'),
+                np.column_stack([T, E_per_N, se_E_per_N]),
+                delimiter=',', header='T,E_per_N,se_E_per_N', comments='',
+            )
+
+        if 'S' in axes_map:
+            np.savetxt(
+                os.path.join(save_directory, stem + '.S.csv'),
+                np.column_stack([T, S, nan_col]),
+                delimiter=',', header='T,S_per_N,se_S_per_N', comments='',
+            )
 
 
 def main(args):
@@ -163,8 +196,12 @@ def main(args):
         fig_S, ax_S = plt.subplots(figsize=(3.5, 3))
         axes_map['S'] = ax_S
 
+    save_to = args.save_to
+    if save_to is not None and not os.path.isdir(save_to):
+        raise IOError(f"Cannot save to {save_to}: not a directory") 
+
     for fname, color, label in zip(fnames, colors, labels):
-        plot_file(fname, axes_map, color, label)
+        plot_file(fname, axes_map, color, label, save_to)
 
     if 'C' in axes_map:
         ax = axes_map['C']
@@ -213,6 +250,7 @@ if __name__ == "__main__":
 
     parser.add_argument("files", nargs='+', help="output hdf5 files")
     parser.add_argument("--labels", nargs='+', help="labels for plot")
+    parser.add_argument("--save_to", help="saves plot data to specified directory", default=None)
     parser.add_argument("--xlim", nargs=2, help="x limits", type=float)
     parser.add_argument("--y_logscale", action="store_true")
     parser.add_argument("--plot", nargs='+', default=['C'],
