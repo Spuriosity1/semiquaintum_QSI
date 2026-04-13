@@ -234,11 +234,12 @@ int try_flip_ring(Plaq* p, MCSettings& mc) {
     std::vector<MFBond> quantum_quantum_bonds; 
     for (QClusterMF* qc : touched) {
         for (const auto& b : qc->mf_bonds) {
+            // touched-to-other bonds
             if (!touched.count(b.other)) {
-                quantum_quantum_bonds.emplace_back(qc, b.my_site, b.other, b.other_site);
+                quantum_quantum_bonds.push_back({qc, b.my_site, b.other, b.other_site});
             } else if (b.other < qc){
                 // pointer comparison trick avoids double counting
-                quantum_quantum_bonds.emplace_back(qc, b.my_site, b.other, b.other_site);
+                quantum_quantum_bonds.push_back({qc, b.my_site, b.other, b.other_site});
             }
         }
     }
@@ -392,10 +393,10 @@ int try_flip_worm(MCSettings& mc, Spin* root) {
     for (QClusterMF* qc : touched) {
         for (const auto& b : qc->mf_bonds) {
             if (!touched.count(b.other)) {
-                quantum_quantum_bonds.emplace_back(qc, b.my_site, b.other, b.other_site);
+                quantum_quantum_bonds.push_back({qc, b.my_site, b.other, b.other_site});
             } else if (b.other < qc){
                 // pointer comparison trick avoids double counting
-                quantum_quantum_bonds.emplace_back(qc, b.my_site, b.other, b.other_site);
+                quantum_quantum_bonds.push_back({qc, b.my_site, b.other, b.other_site});
             }
         }
     }
