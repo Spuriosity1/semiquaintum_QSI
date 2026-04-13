@@ -71,6 +71,9 @@ static int muca_accept(MCSettings& mc, double dE, double hastings, ApplyFn&& app
     return 0;
 }
 
+// Forward declaration: defined later, used by try_flip_ring.
+static double mf_interaction(const QClusterMF& qc, int n);
+
 // Move 1: single-spin Metropolis on a fully classical (type 4) spin.
 // ΔE = −2 * Jzz * s * Σ_{classical neighbours} nb   (flipping negates all bonds).
 int try_flip_classical(MCSettings& mc, Spin* s) {
@@ -84,46 +87,218 @@ int try_flip_classical(MCSettings& mc, Spin* s) {
 // ↑↓↑↓↑↓ pattern has zero net bond energy change on flip).  Essential for
 // ergodicity: without ring moves the classical sector can get trapped.
 // Always accepted when the plaquette is in the alternating state; rejected otherwise.
-int try_flip_ring(Plaq* p) {
+int try_flip_ring_vibe(Plaq* p, MCSettings& mc) {
+    static const double ENERGY_TOL = 1e-9;
+
     if (!p->is_complete) return 0;
-    // always accept if flippable, otherwise reject
+
+    // Check alternating pattern
     int prev_ising = p->member_spins[0]->ising_val;
-
-    for (int i=1; i<6; ++i){
-        auto s = p->member_spins[i];
-        if(s->ising_val*prev_ising != -1) return 0;
-        prev_ising = s->ising_val;
+    for (int i = 1; i < 6; ++i) {
+        if (p->member_spins[i]->ising_val * prev_ising != -1) return 0;
+        prev_ising = p->member_spins[i]->ising_val;
     }
 
-    for (auto s : p->member_spins)
-        s->ising_val *= -1;
-
-    // Update boundary configs of any quantum clusters adjacent to flipped spins.
-    // Incautios scan here (flipped ring guaranteed classical)
-    std::unordered_set<QClusterBase*> touched;
-    for (int i=0; i<6; i++){
+    // Collect quantum clusters adjacent to flipped spins
+    std::unordered_set<QClusterMF*> touched;
+    for (int i = 0; i < 6; i++) {
         Spin* s = p->member_spins[i];
-        for (Spin* nb : s->owning_tetras[i%2]->member_spins )
+        for (Spin* nb : s->owning_tetras[i%2]->member_spins)
             if (!nb->deleted && nb->is_quantum() && nb->owning_cluster)
-                touched.insert(nb->owning_cluster);
+                touched.insert(static_cast<QClusterMF*>(nb->owning_cluster));
     }
-    for (QClusterBase* qcb : touched) {
-        const double E_old = qcb->energy();
-        QClusterBase::BoundaryConfig new_cfg = 0;
-        for (int i = 0; i < (int)qcb->classical_boundary_spins.size(); i++)
-            if (qcb->classical_boundary_spins[i]->ising_val == +1)
+
+    // Fast path: no quantum neighbours — ring is purely classical, always accept
+    if (touched.empty()) {
+        for (auto s : p->member_spins) s->ising_val *= -1;
+        return 1;
+    }
+
+    // MF neighbors of touched clusters that are not themselves touched.
+    // We need their mf_interaction in the local energy sum because their bonds
+    // to touched clusters appear in their mf_bonds lists (from the other side).
+    std::unordered_set<QClusterMF*> mf_neighbors;
+    for (QClusterMF* qc : touched)
+        for (const auto& b : qc->mf_bonds)
+            if (!touched.count(b.other))
+                mf_neighbors.insert(b.other);
+
+    // Local MF energy: sum over touched ∪ mf_neighbors, with 0.5 to avoid
+    // double-counting (every bond appears once in each endpoint's mf_bonds list).
+    // This equals ΔE_cc exactly because:
+    //   - bonds inside touched: listed in both touched sums → factor 2 × 0.5 = 1 ✓
+    //   - bonds touched↔neighbor: listed once each side → factor 2 × 0.5 = 1 ✓
+    //   - bonds inside mf_neighbors: both sides unchanged → cancel in ΔE ✓
+    //   - bonds neighbor↔outside: neighbor <Sz> fixed, outside <Sz> fixed → cancel ✓
+    auto local_mf_energy = [&]() {
+        double E = 0;
+        for (QClusterMF* qc : touched)
+            E += mf_interaction(*qc, qc->eigenstate_idx);
+        for (QClusterMF* qc : mf_neighbors)
+            E += mf_interaction(*qc, qc->eigenstate_idx);
+        return 0.5 * E;
+    };
+
+    // Snapshot eigenstate indices for rollback
+    struct Snap { QClusterMF* qc; int idx; };
+    std::vector<Snap> snaps;
+    for (QClusterMF* qc : touched) snaps.push_back({qc, qc->eigenstate_idx});
+
+    double E_local_old = local_mf_energy();
+
+    // Flip ring spins
+    for (auto s : p->member_spins) s->ising_val *= -1;
+
+    // Re-diagonalise touched clusters; track to nearest eigenvalue
+    for (QClusterMF* qc : touched) {
+        double E_old = qc->eigenvalues[qc->eigenstate_idx];
+        QClusterMF::BoundaryConfig new_cfg = 0;
+        for (int i = 0; i < (int)qc->classical_boundary_spins.size(); i++)
+            if (qc->classical_boundary_spins[i]->ising_val == +1)
                 new_cfg |= (1u << i);
-        qcb->diagonalise(new_cfg);
-        int best_idx = 0;
-        double best_dist = std::abs(qcb->eigenvalues[0] - E_old);
-        for (int n = 1; n < (int)qcb->eigenvalues.size(); n++) {
-            double d = std::abs(qcb->eigenvalues[n] - E_old);
-            if (d < best_dist) { best_dist = d; best_idx = n; }
+        qc->diagonalise(new_cfg);
+        int best = 0;
+        double best_d = std::abs(qc->eigenvalues[0] - E_old);
+        for (int n = 1; n < (int)qc->eigenvalues.size(); n++) {
+            double d = std::abs(qc->eigenvalues[n] - E_old);
+            if (d < best_d) { best_d = d; best = n; }
         }
-        qcb->eigenstate_idx = best_idx;
+        assert(best_d < ENERGY_TOL);
+        qc->eigenstate_idx = best;
     }
-    return 1;
+
+    // Metropolis on change in local MF energy (ring Ising bonds are zero-energy)
+    double dE = local_mf_energy() - E_local_old;
+    if (mc.uniform(mc.rng) < std::exp(-mc.beta * dE))
+        return 1;
+
+    // Rollback: restore spins and re-diagonalise touched clusters to original config
+    for (auto s : p->member_spins) s->ising_val *= -1;
+    for (auto& snap : snaps) {
+        QClusterMF::BoundaryConfig old_cfg = 0;
+        for (int i = 0; i < (int)snap.qc->classical_boundary_spins.size(); i++)
+            if (snap.qc->classical_boundary_spins[i]->ising_val == +1)
+                old_cfg |= (1u << i);
+        snap.qc->diagonalise(old_cfg);  // also restores Sz_expect
+        snap.qc->eigenstate_idx = snap.idx;
+    }
+    return 0;
 }
+
+
+
+struct MFBond {
+    QClusterMF* c1;
+    int site1;
+    QClusterMF* c2;
+    int site2;
+};
+    
+
+//
+// Move 1a: simultaneous flip of all 6 spins on a complete hexagonal plaquette.
+// These are zero-energy moves within the classical ice manifold (alternating
+// ↑↓↑↓↑↓ pattern has zero net bond energy change on flip).  Essential for
+// ergodicity: without ring moves the classical sector can get trapped.
+// Always accepted when the plaquette is in the alternating state; rejected otherwise.
+int try_flip_ring(Plaq* p, MCSettings& mc) {
+    static const double ENERGY_TOL = 1e-9;
+
+    if (!p->is_complete) return 0;
+
+    // Check alternating pattern
+    int prev_ising = p->member_spins[0]->ising_val;
+    for (int i = 1; i < 6; ++i) {
+        if (p->member_spins[i]->ising_val * prev_ising != -1) return 0;
+        prev_ising = p->member_spins[i]->ising_val;
+    }
+
+    // Collect quantum clusters adjacent to flipped spins
+    std::unordered_set<QClusterMF*> touched;
+    for (int i = 0; i < 6; i++) {
+        Spin* s = p->member_spins[i];
+        for (Spin* nb : s->owning_tetras[i%2]->member_spins)
+            if (!nb->deleted && nb->is_quantum() && nb->owning_cluster)
+                touched.insert(static_cast<QClusterMF*>(nb->owning_cluster));
+    }
+
+    // Fast path: no quantum neighbours — ring is purely classical, always accept
+    if (touched.empty()) {
+        for (auto s : p->member_spins) s->ising_val *= -1;
+        return 1;
+    }
+
+    // MF neighbors of touched clusters that are not themselves touched.
+    // We need their mf_interaction in the local energy sum because their bonds
+    // to touched clusters appear in their mf_bonds lists (from the other side).
+    std::vector<MFBond> quantum_quantum_bonds; 
+    for (QClusterMF* qc : touched) {
+        for (const auto& b : qc->mf_bonds) {
+            if (!touched.count(b.other)) {
+                quantum_quantum_bonds.emplace_back(qc, b.my_site, b.other, b.other_site);
+            } else if (b.other < qc){
+                // pointer comparison trick avoids double counting
+                quantum_quantum_bonds.emplace_back(qc, b.my_site, b.other, b.other_site);
+            }
+        }
+    }
+
+    // sums all de-duplicated bond energies to compare later
+    auto local_mf_energy = [&]() {
+        double E = 0;
+        double Jzz = ModelParams::get().Jzz;
+        for (const auto& b : quantum_quantum_bonds) {
+            E += Jzz * b.c1->expect_Sz(b.c1->eigenstate_idx, b.site1)
+                     * b.c2->expect_Sz(b.c2->eigenstate_idx, b.site2);
+        }
+        return E;
+    };
+
+    // Snapshot eigenstate indices for rollback
+    struct Snap { QClusterMF* qc; int idx; };
+    std::vector<Snap> snaps;
+    for (QClusterMF* qc : touched) snaps.push_back({qc, qc->eigenstate_idx});
+
+    double E_local_old = local_mf_energy();
+
+    // Flip ring spins
+    for (auto s : p->member_spins) s->ising_val *= -1;
+
+    // Re-diagonalise touched clusters; track to nearest eigenvalue
+    for (QClusterMF* qc : touched) {
+        double E_old = qc->eigenvalues[qc->eigenstate_idx];
+        QClusterMF::BoundaryConfig new_cfg = 0;
+        for (int i = 0; i < (int)qc->classical_boundary_spins.size(); i++)
+            if (qc->classical_boundary_spins[i]->ising_val == +1)
+                new_cfg |= (1u << i);
+        qc->diagonalise(new_cfg);
+        int best = 0;
+        double best_d = std::abs(qc->eigenvalues[0] - E_old);
+        for (int n = 1; n < (int)qc->eigenvalues.size(); n++) {
+            double d = std::abs(qc->eigenvalues[n] - E_old);
+            if (d < best_d) { best_d = d; best = n; }
+        }
+        assert(best_d < ENERGY_TOL);
+        qc->eigenstate_idx = best;
+    }
+
+    // Metropolis on change in local MF energy (ring Ising bonds are zero-energy)
+    double dE = local_mf_energy() - E_local_old;
+    if (mc.uniform(mc.rng) < std::exp(-mc.beta * dE))
+        return 1;
+
+    // Rollback: restore spins and re-diagonalise touched clusters to original config
+    for (auto s : p->member_spins) s->ising_val *= -1;
+    for (auto& snap : snaps) {
+        snap.qc->sync();
+        snap.qc->eigenstate_idx = snap.idx;
+    }
+    return 0;
+}
+
+
+
+
 
 
 // Move 1b: simultaneous flip of a worm.
@@ -139,6 +314,8 @@ int try_flip_ring(Plaq* p) {
 // We still call diagonalise() after the worm to keep boundary_config consistent
 // for future boundary-spin Metropolis moves; this is a cache lookup (O(1)).
 int try_flip_worm(MCSettings& mc, Spin* root) {
+    static const double ENERGY_TOL = 1e-9;
+
     if (root->deleted || root->is_quantum()) return 0;
     if (!root->owning_tetras[0] || !root->owning_tetras[1]) return 0;
 
@@ -202,30 +379,75 @@ int try_flip_worm(MCSettings& mc, Spin* root) {
 
     // Keep boundary_config consistent for any quantum clusters whose boundary spins
     // were flipped.  diagonalise() is a cache lookup here — O(1) for small clusters.
-    std::unordered_set<QClusterBase*> touched;
+    std::unordered_set<QClusterMF*> touched;
     for (Spin* s : path) {
         for (Spin* nb : s->neighbours) {
             if (!nb->deleted && nb->is_quantum() && nb->owning_cluster)
-                touched.insert(nb->owning_cluster);
+                touched.insert(static_cast<QClusterMF*>(nb->owning_cluster));
         }
-    }
-    for (QClusterBase* qcb : touched) {
-        const double E_old = qcb->energy();
-        QClusterBase::BoundaryConfig new_cfg = 0;
-        for (int i = 0; i < (int)qcb->classical_boundary_spins.size(); i++)
-            if (qcb->classical_boundary_spins[i]->ising_val == +1)
-                new_cfg |= (1u << i);
-        qcb->diagonalise(new_cfg);
-        int best_idx = 0;
-        double best_dist = std::abs(qcb->eigenvalues[0] - E_old);
-        for (int n = 1; n < (int)qcb->eigenvalues.size(); n++) {
-            double d = std::abs(qcb->eigenvalues[n] - E_old);
-            if (d < best_dist) { best_dist = d; best_idx = n; }
-        }
-        qcb->eigenstate_idx = best_idx;
     }
 
-    return 1;  // loop closed, all flips committed
+    // sums all de-duplicated bond energies to compare later
+    std::vector<MFBond> quantum_quantum_bonds;
+    for (QClusterMF* qc : touched) {
+        for (const auto& b : qc->mf_bonds) {
+            if (!touched.count(b.other)) {
+                quantum_quantum_bonds.emplace_back(qc, b.my_site, b.other, b.other_site);
+            } else if (b.other < qc){
+                // pointer comparison trick avoids double counting
+                quantum_quantum_bonds.emplace_back(qc, b.my_site, b.other, b.other_site);
+            }
+        }
+    }
+
+    auto local_mf_energy = [&]() {
+        double E = 0;
+        double Jzz = ModelParams::get().Jzz;
+        for (const auto& b : quantum_quantum_bonds) {
+            E += Jzz * b.c1->expect_Sz(b.c1->eigenstate_idx, b.site1)
+                     * b.c2->expect_Sz(b.c2->eigenstate_idx, b.site2);
+        }
+        return E;
+    };
+
+
+    // At this point we have not sync()'d the boundary changes 
+    // -> spectra still have original values
+    double E_local_old = local_mf_energy();
+
+
+    // Snapshot eigenstate indices for rollback
+    struct Snap { QClusterMF* qc; int idx; };
+    std::vector<Snap> snaps;
+    for (QClusterMF* qc : touched) snaps.push_back({qc, qc->eigenstate_idx});
+
+    for (QClusterMF* qc : touched) {
+        const double E_old = qc->energy();
+        qc->sync();
+        int best_idx = 0;
+        double best_dist = std::abs(qc->eigenvalues[0] - E_old);
+        for (int n = 1; n < (int)qc->eigenvalues.size(); n++) {
+            double d = std::abs(qc->eigenvalues[n] - E_old);
+            if (d < best_dist) { best_dist = d; best_idx = n; }
+        }
+        assert(best_dist<ENERGY_TOL);
+        qc->eigenstate_idx = best_idx;
+    }
+
+    // Metropolis on change in local MF energy (ring Ising bonds are zero-energy)
+    double dE = local_mf_energy() - E_local_old;
+    if (mc.uniform(mc.rng) < std::exp(-mc.beta * dE))
+        return 1;
+
+
+    // Rollback: restore spins and re-diagonalise touched clusters to original config
+    for (auto s : path) s->ising_val *= -1;
+    for (auto& snap : snaps) {
+        snap.qc->sync();
+        snap.qc->eigenstate_idx = snap.idx;
+    }
+
+    return 0;
 }
 
 int classical_tetra_charge(const Tetra* t) {
@@ -409,7 +631,6 @@ int try_flip_monopole_worm(MCSettings& mc, Tetra*tail_tetra, double target_lengt
 
     for (QClusterMF* qc : touched) {
         const double E_old = qc->energy();   // eigenvalue before boundary change
-        auto Sz_old = qc->get_Sz_expect(); // all <Sz> vals
         
         QClusterMF::BoundaryConfig new_cfg = 0;
         for (int i = 0; i < (int)qc->classical_boundary_spins.size(); i++)
@@ -901,7 +1122,7 @@ void MCStateMF::sweep(MCSettings& mc_) {
     mc_.sweeps_attempted++;
     if (mc_.moves & MOVE_RING) {
         for (auto p : intact_plaqs)
-            mc_.accepted_plaq += try_flip_ring(p);
+            mc_.accepted_plaq += try_flip_ring(p, mc_);
     }
     if (mc_.moves & MOVE_CLASSICAL) {
         for (auto s : classical_spins)

@@ -24,8 +24,8 @@
 #include <iomanip>
 #include <cmath>
 
-// try_flip_ring and tetra_charge are not exposed in monte_carlo.hpp.
-int try_flip_ring(Plaq*);
+// try_flip_ring is not exposed in monte_carlo.hpp.
+int try_flip_ring(Plaq*, MCSettings&);
 
 // Replicate the static mf_interaction() from monte_carlo.cpp.
 // Returns Jzz * sum_{bonds} <Sz_i>_n * <Sz_j>_{other eigenstate}
@@ -303,6 +303,10 @@ int main(int argc, char** argv) {
             // a full resync — i.e., the cluster update is self-consistent.
             // ----------------------------------------------------------------
             {
+                // beta=0 → always accept (ensures consistency check runs)
+                MCSettings mc_ring;
+                mc_ring.beta = 0.0;
+                mc_ring.rng  = std::mt19937(seed ^ 0xCAFEBABEu);
                 const auto spin_backup = save_spins();
                 for (Plaq* p : state.intact_plaqs) {
                     // Force alternating ising values on the 6 ring spins.
@@ -310,7 +314,7 @@ int main(int argc, char** argv) {
                         p->member_spins[i]->ising_val = (i % 2 == 0) ? +1 : -1;
                     resync_clusters();
 
-                    const int flipped = try_flip_ring(p);
+                    const int flipped = try_flip_ring(p, mc_ring);
                     if (!flipped) { restore_spins(spin_backup); continue; }
 
                     const double E_stored = state.energy();
