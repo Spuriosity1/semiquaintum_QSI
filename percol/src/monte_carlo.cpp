@@ -26,8 +26,6 @@ void MCState::partition_spins(std::vector<Spin>& spins){
         this->boundary_spins.push_back(s);
 }
 
-
-
 static const char* spin_type(const Spin* s) {
     if (s->deleted)      return "deleted";
     if (s->is_quantum()) return "quantum";

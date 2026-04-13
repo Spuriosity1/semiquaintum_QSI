@@ -45,6 +45,17 @@ class energy_manager {
 
     void save(const std::filesystem::path& file_path);
     void write_group(hid_t file_id, const char* group_name="/energy");
+
+    // Truncate (or create) the HDF5 file at file_path so that subsequent
+    // write_group() calls append into a clean file.  Call once before the
+    // first write_group() when the same file is reused across runs or replicas.
+    static void init_file(const std::filesystem::path& file_path) {
+        hid_t file_id = H5Fcreate(file_path.string().c_str(), H5F_ACC_TRUNC,
+                                   H5P_DEFAULT, H5P_DEFAULT);
+        if (file_id < 0)
+            throw std::runtime_error("Failed to initialise HDF5 file: " + file_path.string());
+        H5Fclose(file_id);
+    }
 };
 
 
