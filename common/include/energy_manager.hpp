@@ -5,8 +5,10 @@
 #include "H5Gpublic.h"
 #include "H5Ipublic.h"
 #include "H5Ppublic.h"
+#include <algorithm>
 #include <cassert>
 #include <filesystem>
+#include <numeric>
 #include <vector>
 
 
@@ -15,6 +17,7 @@ class energy_manager {
     std::vector<double> E2;
     std::vector<double> T_list;
     std::vector<size_t> n_samples;
+    size_t curr_idx=0;
 
     public:
     energy_manager(size_t n_temperatures_reserve=0) {
@@ -25,26 +28,59 @@ class energy_manager {
     }
 
     void new_T(double T){
+        curr_idx=T_list.size();
+
         E.push_back(0);
         E2.push_back(0);
         n_samples.push_back(0);
         T_list.push_back(T);
     }
 
+    void set_T(double T, double tol=1e-8){
+        for (size_t i = 0; i < T_list.size(); i++){
+            if (std::abs(T_list[i] - T) < tol){
+                curr_idx = i;
+                return;
+            }
+        }
+        // Not found — create new entry.
+        curr_idx = T_list.size();
+        E.push_back(0);
+        E2.push_back(0);
+        n_samples.push_back(0);
+        T_list.push_back(T);
+    }
+
+    double curr_T(){
+        return T_list[curr_idx];
+    }
+
+
     double curr_E() const {
-        return E.back() / n_samples.back();
+        return E[curr_idx] / n_samples[curr_idx];
     }
         
     void sample(double _e){
         assert(!T_list.empty());
 
-        E.back() += _e;
-        E2.back() += (_e*_e);
-        n_samples.back()++;
+        E[curr_idx] += _e;
+        E2[curr_idx] += (_e*_e);
+        n_samples[curr_idx]++;
     }
 
     void save(const std::filesystem::path& file_path);
     void write_group(hid_t file_id, const char* group_name="/energy");
+
+    // Truncate (or create) the HDF5 file at file_path so that subsequent
+    // write_group() calls append into a clean file.  Call once before the
+    // first write_group() when the same file is reused across runs or replicas.
+    static void init_file(const std::filesystem::path& file_path) {
+        hid_t file_id = H5Fcreate(file_path.string().c_str(), H5F_ACC_TRUNC,
+                                   H5P_DEFAULT, H5P_DEFAULT);
+        if (file_id < 0)
+            throw std::runtime_error("Failed to initialise HDF5 file: " + file_path.string());
+        H5Fclose(file_id);
+    }
 };
 
 
@@ -63,6 +99,21 @@ inline void energy_manager::save(const std::filesystem::path& file_path){
 }
 
 inline void energy_manager::write_group(hid_t file_id, const char* group_name){
+    // Sort all arrays by temperature (ascending) before writing.
+    const size_t n = T_list.size();
+    std::vector<size_t> idx(n);
+    std::iota(idx.begin(), idx.end(), 0);
+    std::sort(idx.begin(), idx.end(), [&](size_t a, size_t b){ return T_list[a] < T_list[b]; });
+
+    std::vector<double>  sT(n), sE(n), sE2(n);
+    std::vector<size_t>  sN(n);
+    for (size_t i = 0; i < n; i++){
+        sT[i]  = T_list[idx[i]];
+        sE[i]  = E[idx[i]];
+        sE2[i] = E2[idx[i]];
+        sN[i]  = n_samples[idx[i]];
+    }
+
     // Open existing group or create a new one.
     hid_t data_group;
     if (H5Lexists(file_id, group_name, H5P_DEFAULT) > 0) {
@@ -74,7 +125,7 @@ inline void energy_manager::write_group(hid_t file_id, const char* group_name){
     if (data_group < 0)
         throw std::runtime_error(std::string("Failed to open/create group ") + group_name);
 
-    const hsize_t n_new = E.size();
+    const hsize_t n_new = n;
 
     // Append n_new entries to dataset `name`.  If the dataset does not exist
     // yet it is created with chunked/unlimited storage so future appends work.
@@ -123,10 +174,10 @@ inline void energy_manager::write_group(hid_t file_id, const char* group_name){
         }
     };
 
-    append_dataset("E",         H5T_NATIVE_DOUBLE,  E.data());
-    append_dataset("E2",        H5T_NATIVE_DOUBLE,  E2.data());
-    append_dataset("T_list",    H5T_NATIVE_DOUBLE,  T_list.data());
-    append_dataset("n_samples", H5T_NATIVE_ULLONG,  n_samples.data());
+    append_dataset("E",         H5T_NATIVE_DOUBLE,  sE.data());
+    append_dataset("E2",        H5T_NATIVE_DOUBLE,  sE2.data());
+    append_dataset("T_list",    H5T_NATIVE_DOUBLE,  sT.data());
+    append_dataset("n_samples", H5T_NATIVE_ULLONG,  sN.data());
 
     H5Gclose(data_group);
 }

@@ -73,7 +73,9 @@ struct MCSettings {
     std::uniform_real_distribution<double> uniform{0.0, 1.0};
 
     MoveFlags moves = MOVE_ALL;
-    MUCAContext* muca = nullptr;  // null → canonical Boltzmann; non-null → MUCA mode
+    size_t max_worm_steps=2000;
+    MUCAContext* muca = nullptr;  
+    // null → canonical Boltzmann; non-null → MUCA mode
 
     double accepted_classical=0;
     double accepted_boundary=0;

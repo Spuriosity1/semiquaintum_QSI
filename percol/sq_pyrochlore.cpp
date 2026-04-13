@@ -361,23 +361,30 @@ int main (int argc, char *argv[]) {
         const double factor = std::exp(std::log(Tcold / Thot) / n_step);
         const size_t steps_per_replica = n_step / n_replicas;
 
-        // Initialise one snapshot per replica from the current (post-burn-in) state.
-        std::vector<ReplicaState> replicas(n_replicas, save_state(state));
+        // Stage 1: pre-anneal from T_hot, capturing a snapshot at each replica's
+        // starting temperature T_r(0) = Thot * (Tcold/Thot)^{r/n_replicas}.
+        // params.beta is already 1/Thot from the global burn-in.
+        std::vector<ReplicaState> replicas(n_replicas);
+        replicas[0] = save_state(state);  // replica 0 starts at T_hot
 
-        // Burn-in each replica at its initial temperature.
-        if (verbosity >= 1) std::cout << "PT burn-in per replica...\n";
-        for (int r = 0; r < n_replicas; r++) {
-            load_state(state, replicas[r]);
-            params.beta = betas[r];
-            for (size_t n = 0; n < nburn; n++) do_sweep();
+        if (verbosity >= 1) std::cout << "PT pre-annealing (Stage 1)...\n";
+        for (int r = 1; r < n_replicas; r++) {
+            // Cool steps_per_replica steps to reach T_r(0).
+            for (size_t s = 0; s < steps_per_replica; s++) {
+                params.beta /= factor;
+                for (size_t n = 0; n < nburn; n++) do_sweep();
+            }
             replicas[r] = save_state(state);
-            if (verbosity >= 1) std::cout << "\r  replica " << r+1 << "/" << n_replicas << std::flush;
+            if (verbosity >= 1)
+                std::cout << "  replica " << r+1 << "/" << n_replicas
+                          << " @ T=" << std::setprecision(4) << 1.0/params.beta << "\n";
         }
         if (verbosity >= 1) std::cout << "\n";
 
-        // One energy_manager per replica; each accumulates steps_per_replica T-entries.
-        // Total T-points across all replicas = n_step, same as the single-replica run.
-        std::vector<energy_manager> ems(n_replicas);
+        // Reset beta: the PT loop's betas[] vector takes over from here.
+        params.beta = 1.0 / Thot;
+
+        energy_manager em(n_replicas);
 
         std::vector<int64_t> swap_accepted(n_replicas - 1, 0);
         std::vector<int64_t> swap_attempted(n_replicas - 1, 0);
@@ -387,25 +394,28 @@ int main (int argc, char *argv[]) {
         for (size_t t = 0; t < steps_per_replica; t++) {
 
             // Advance all temperatures by one annealing step.
-            for (int r = 0; r < n_replicas; r++) betas[r] /= factor;
+            for (int r = 0; r < n_replicas; r++){
+                betas[r] /= factor;
+                em.set_T(1.0 / betas[r]);   // register bin (no-op if already exists)
+            }
 
             for (int j=0; j<n_replica_swaps; j++){
 
                 // Thermalise + sample each replica at its current temperature.
                 for (int r = 0; r < n_replicas; r++) {
                     if (verbosity >= 1){
-                        std::cout << "replica " << r+1 
+                        std::cout << "replica " << r+1
                             << " run "<<j+1<<"/"<<n_replica_swaps
                             <<" @ T="<<1.0/betas[r]<< std::endl;
                     }
 
                     load_state(state, replicas[r]);
                     params.beta = betas[r];
-                    ems[r].new_T(1.0 / betas[r]);
                     for (size_t n = 0; n < nburn; n++) do_sweep();
+                    em.set_T(1.0 / betas[r]);
                     for (size_t n = 0; n < nsamp; n++) {
                         for (size_t n = 0; n < nsweep; n++) do_sweep();
-                        ems[r].sample(state.energy());
+                        em.sample(state.energy());
                     }
                     replicas[r] = save_state(state);
                 }
@@ -427,9 +437,11 @@ int main (int argc, char *argv[]) {
             }
 
             if (verbosity >= 1) {
-                for (int r = 0; r < n_replicas; r++)
+                for (int r = 0; r < n_replicas; r++) {
+                    em.set_T(1.0 / betas[r]);
                     std::cout << "T=" << std::setprecision(4) << (1.0/betas[r])
-                              << " E=" << std::setprecision(5) << ems[r].curr_E() << "  ";
+                              << " E=" << std::setprecision(5) << em.curr_E() << "  ";
+                }
                 std::cout << "\n  swaps:";
                 for (int r = 0; r < n_replicas - 1; r++)
                     std::cout << " " << swap_accepted[r] << "/" << swap_attempted[r];
@@ -439,10 +451,8 @@ int main (int argc, char *argv[]) {
 
         std::cout << "Done! Writing to file... " << std::endl;
 
-        // Append each replica's T-entries into the single "energy" group (r=0
-        // first so T runs hot→cold, matching the standard annealing format).
-        for (int r = 0; r < n_replicas; r++)
-            ems[r].write_group(file_id, "energy");
+        // Write all temperature bins (sorted by T) into the "energy" group.
+        em.write_group(file_id, "energy");
 
         // Write PT swap statistics.
         {
