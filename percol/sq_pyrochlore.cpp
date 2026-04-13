@@ -178,6 +178,11 @@ int main (int argc, char *argv[]) {
         .default_value(1)
         .scan<'i', int>();
 
+    ap.add_argument("--n_replica_swaps")
+        .help("Number of attempted replica exchanges per temperature")
+        .default_value(1)
+        .scan<'i', int>();
+
     ap.add_argument("--verbosity", "-v")
         .help("Output verbosity: 0=silent, 1=normal, 2=+Q² spinon texture, 5=+cluster spectra")
         .default_value(1)
@@ -203,10 +208,11 @@ int main (int argc, char *argv[]) {
     size_t nsweep = ap.get<size_t>("--nsweep");
     size_t nsamp = ap.get<size_t>("--nsamp");
     size_t nburn = ap.get<size_t>("--nburn");
-    bool exact_boundary = !ap.get<bool>("--mf_boundary");
-    bool classical_only = ap.get<bool>("--classical");
-    int  verbosity      = ap.get<int>("--verbosity");
-    int  n_replicas     = ap.get<int>("--n_replicas");
+    bool exact_boundary  = !ap.get<bool>("--mf_boundary");
+    bool classical_only  = ap.get<bool>("--classical");
+    int  verbosity       = ap.get<int>("--verbosity");
+    int  n_replicas      = ap.get<int>("--n_replicas");
+    int  n_replica_swaps = ap.get<int>("--n_replica_swaps");
 
     MCSettings params;
     params.moves = parse_moves(ap.get<std::string>("--moves"));
@@ -383,31 +389,40 @@ int main (int argc, char *argv[]) {
             // Advance all temperatures by one annealing step.
             for (int r = 0; r < n_replicas; r++) betas[r] /= factor;
 
-            // Thermalise + sample each replica at its current temperature.
-            for (int r = 0; r < n_replicas; r++) {
-                load_state(state, replicas[r]);
-                params.beta = betas[r];
-                ems[r].new_T(1.0 / betas[r]);
-                for (size_t n = 0; n < nburn; n++) do_sweep();
-                for (size_t n = 0; n < nsamp; n++) {
-                    for (size_t n = 0; n < nsweep; n++) do_sweep();
-                    ems[r].sample(state.energy());
+            for (int j=0; j<n_replica_swaps; j++){
+
+                // Thermalise + sample each replica at its current temperature.
+                for (int r = 0; r < n_replicas; r++) {
+                    if (verbosity >= 1){
+                        std::cout << "replica " << r+1 
+                            << " run "<<j+1<<"/"<<n_replica_swaps
+                            <<" @ T="<<1.0/betas[r]<< std::endl;
+                    }
+
+                    load_state(state, replicas[r]);
+                    params.beta = betas[r];
+                    ems[r].new_T(1.0 / betas[r]);
+                    for (size_t n = 0; n < nburn; n++) do_sweep();
+                    for (size_t n = 0; n < nsamp; n++) {
+                        for (size_t n = 0; n < nsweep; n++) do_sweep();
+                        ems[r].sample(state.energy());
+                    }
+                    replicas[r] = save_state(state);
                 }
-                replicas[r] = save_state(state);
-            }
 
-            // Attempt swaps between all adjacent replica pairs.
-            for (int r = 0; r < n_replicas - 1; r++) {
-                load_state(state, replicas[r]);
-                double E_r = state.energy();
-                load_state(state, replicas[r+1]);
-                double E_r1 = state.energy();
+                // Attempt swaps between all adjacent replica pairs.
+                for (int r = 0; r < n_replicas - 1; r++) {
+                    load_state(state, replicas[r]);
+                    double E_r = state.energy();
+                    load_state(state, replicas[r+1]);
+                    double E_r1 = state.energy();
 
-                double log_acc = (betas[r+1] - betas[r]) * (E_r - E_r1);
-                swap_attempted[r]++;
-                if (log_acc >= 0.0 || uni(params.rng) < std::exp(log_acc)) {
-                    std::swap(replicas[r], replicas[r+1]);
-                    swap_accepted[r]++;
+                    double log_acc = (betas[r+1] - betas[r]) * (E_r - E_r1);
+                    swap_attempted[r]++;
+                    if (log_acc >= 0.0 || uni(params.rng) < std::exp(log_acc)) {
+                        std::swap(replicas[r], replicas[r+1]);
+                        swap_accepted[r]++;
+                    }
                 }
             }
 
