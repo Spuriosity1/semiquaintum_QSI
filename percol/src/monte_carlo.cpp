@@ -330,10 +330,8 @@ int try_flip_worm(MCSettings& mc, Spin* root) {
     // Alternates every step: -root_val, +root_val, -root_val, …
     int heal_val = -root_val;
 
-    constexpr int MAX_STEPS = 200;
-
     while (head_tetra != tail_tetra) {
-        if ((int)path.size() > MAX_STEPS) {
+        if (path.size() > mc.max_worm_steps) {
             for (Spin* s : path) s->ising_val *= -1;
             return 0;
         }
