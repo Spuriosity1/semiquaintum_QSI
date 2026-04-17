@@ -21,7 +21,6 @@ project('dmnd_dil_2', ['cpp', 'c'],
 #endif
 
 
-
 hdf5_inc = get_option('hdf5_inc')
 hdf5_lib = get_option('hdf5_lib')
 
@@ -40,7 +39,8 @@ endif
 
 project_inc = []
 
-lil_dep = dependency('lattice_lib')
+lil_dep = dependency('lattice_lib', version: '>= 2.1.0')
+
 
 subdir('common')
 subdir('percol')

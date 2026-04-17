@@ -1,7 +1,5 @@
 #pragma once
 
-
-
 #include "H5Gpublic.h"
 #include "H5Ipublic.h"
 #include "H5Ppublic.h"
