@@ -1,5 +1,5 @@
 project('dmnd_dil_2', ['cpp', 'c'],
-  version: '2.0.0',
+  version: '2.1.0',
   meson_version : '>= 1.5.0',
   default_options : [ 'warning_level=3', 'buildtype=release', 'cpp_std=c++2a' ]
 )
@@ -39,7 +39,7 @@ endif
 
 project_inc = []
 
-lil_dep = dependency('lattice_lib', version: '>= 2.1.0')
+lil_dep = dependency('lattice_lib', version: '>= 2.2.2')
 
 
 subdir('common')

@@ -11,6 +11,7 @@
 #include "quantum_cluster.hpp"
 #include "monte_carlo.hpp"
 #include "sim_bits.hpp"
+#include "ssf_manager.hpp"
 
 using namespace std;
 
@@ -218,7 +219,7 @@ int main (int argc, char *argv[]) {
     params.moves = parse_moves(ap.get<std::string>("--moves"));
 
 
-    QClattice sc = initialise_lattice(L);
+    QClattice sc = initialise_lattice(L, "primitive");
 
     // Delete about p*100% of the spins
     // (Bernoulli sample)
@@ -284,6 +285,7 @@ int main (int argc, char *argv[]) {
         /// STANDARD ANNEALING LOOP ///////////////////////////////////////////
 
         energy_manager em;
+        ssf_manager ssf(sc, pyrochlore::pyrochlore_local_axes());
         Q_manager sm;
         double factor = exp( log(Tcold/Thot) / n_step );
 
@@ -291,6 +293,7 @@ int main (int argc, char *argv[]) {
             params.beta /= factor;
             const double T = 1./params.beta;
             em.new_T(T);
+            ssf.new_T(T);
             sm.new_T(T);
 
             for (size_t n=0; n<nburn; n++) do_sweep();
@@ -298,6 +301,7 @@ int main (int argc, char *argv[]) {
             for (size_t n=0; n<nsamp; n++){
                 for (size_t n=0; n<nsweep; n++) do_sweep();
                 em.sample(state.energy());
+                ssf.sample();
                 sm.sample(sc);
             }
 
@@ -337,8 +341,10 @@ int main (int argc, char *argv[]) {
 
         std::cout << "Done! Writing to file... " << std::endl;
 
-        em.write_group(file_id, "energy");
-        sm.write_group(file_id, "Q2");
+        em.write_group(file_id, "/energy");
+        ssf.write_group(file_id, "/ssf");
+        sm.write_group(file_id, "/monopole");
+
 
     } else {
         ///////////////////////////////////////////////////////////////////////
@@ -385,6 +391,8 @@ int main (int argc, char *argv[]) {
         params.beta = 1.0 / Thot;
 
         energy_manager em(n_replicas);
+        ssf_manager ssf(sc, pyrochlore::pyrochlore_local_axes(),
+            n_replicas);
 
         std::vector<int64_t> swap_accepted(n_replicas - 1, 0);
         std::vector<int64_t> swap_attempted(n_replicas - 1, 0);
@@ -397,6 +405,7 @@ int main (int argc, char *argv[]) {
             for (int r = 0; r < n_replicas; r++){
                 betas[r] /= factor;
                 em.set_T(1.0 / betas[r]);   // register bin (no-op if already exists)
+                ssf.set_T(1.0 / betas[r]);   // register bin (no-op if already exists)
             }
 
             for (int j=0; j<n_replica_swaps; j++){
@@ -413,9 +422,11 @@ int main (int argc, char *argv[]) {
                     params.beta = betas[r];
                     for (size_t n = 0; n < nburn; n++) do_sweep();
                     em.set_T(1.0 / betas[r]);
+                    ssf.set_T(1.0 / betas[r]);
                     for (size_t n = 0; n < nsamp; n++) {
                         for (size_t n = 0; n < nsweep; n++) do_sweep();
                         em.sample(state.energy());
+                        ssf.sample();
                     }
                     replicas[r] = save_state(state);
                 }
@@ -439,6 +450,7 @@ int main (int argc, char *argv[]) {
             if (verbosity >= 1) {
                 for (int r = 0; r < n_replicas; r++) {
                     em.set_T(1.0 / betas[r]);
+                    ssf.set_T(1.0 / betas[r]);
                     std::cout << "T=" << std::setprecision(4) << (1.0/betas[r])
                               << " E=" << std::setprecision(5) << em.curr_E() << "  ";
                 }
@@ -452,7 +464,8 @@ int main (int argc, char *argv[]) {
         std::cout << "Done! Writing to file... " << std::endl;
 
         // Write all temperature bins (sorted by T) into the "energy" group.
-        em.write_group(file_id, "energy");
+        em.write_group(file_id, "/energy");
+        ssf.write_group(file_id, "/ssf");
 
         // Write PT swap statistics.
         {

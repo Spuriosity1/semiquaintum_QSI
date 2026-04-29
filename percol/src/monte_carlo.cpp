@@ -1180,6 +1180,16 @@ void MCStateMF::partition_spins(std::vector<Spin>& spins) {
     find_class_tetras(spins, class_tetras);
 }
 
+void initialise_Ising_state(std::vector<Spin>& spins){
+    for (auto& s : spins){
+        if (s.deleted || s.is_quantum()) {
+            s.ising_val=0;
+        } else {
+            s.ising_val=1; // AIAO texture to be randomised later
+        }
+    }
+}
+
 template void MCStateMF::sweep<false>(MCSettings&);
 template void MCStateMF::sweep<true>(MCSettings&);
 

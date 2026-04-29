@@ -1,5 +1,6 @@
 #pragma once
 
+#include "abstract_manager.hpp"
 #include "H5Gpublic.h"
 #include "H5Ipublic.h"
 #include "H5Ppublic.h"
@@ -10,12 +11,11 @@
 #include <vector>
 
 
-class energy_manager {
+class energy_manager : public abstract_manager {
     std::vector<double> E;
     std::vector<double> E2;
-    std::vector<double> T_list;
-    std::vector<size_t> n_samples;
-    size_t curr_idx=0;
+
+    void on_new_temp() override { E.push_back(0.0); E2.push_back(0.0); }
 
     public:
     energy_manager(size_t n_temperatures_reserve=0) {
@@ -25,39 +25,10 @@ class energy_manager {
         n_samples.reserve(n_temperatures_reserve);
     }
 
-    void new_T(double T){
-        curr_idx=T_list.size();
-
-        E.push_back(0);
-        E2.push_back(0);
-        n_samples.push_back(0);
-        T_list.push_back(T);
-    }
-
-    void set_T(double T, double tol=1e-8){
-        for (size_t i = 0; i < T_list.size(); i++){
-            if (std::abs(T_list[i] - T) < tol){
-                curr_idx = i;
-                return;
-            }
-        }
-        // Not found — create new entry.
-        curr_idx = T_list.size();
-        E.push_back(0);
-        E2.push_back(0);
-        n_samples.push_back(0);
-        T_list.push_back(T);
-    }
-
-    double curr_T(){
-        return T_list[curr_idx];
-    }
-
-
     double curr_E() const {
         return E[curr_idx] / n_samples[curr_idx];
     }
-        
+
     void sample(double _e){
         assert(!T_list.empty());
 
@@ -67,7 +38,7 @@ class energy_manager {
     }
 
     void save(const std::filesystem::path& file_path);
-    void write_group(hid_t file_id, const char* group_name="/energy");
+    void write_group(hid_t file_id, const char* group_name="/energy") override;
 
     // Truncate (or create) the HDF5 file at file_path so that subsequent
     // write_group() calls append into a clean file.  Call once before the

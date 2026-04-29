@@ -120,14 +120,9 @@ inline auto identify_flippable_hexas(QClattice& sc, std::vector<Plaq *>& intact_
 }
 
 
-
-
-
-// Generates a supercell of cubic dimension L
-inline auto initialise_lattice(int L)
+inline auto make_cubic_unit_cell()
 {
     using namespace pyrochlore;
-
     QCcellspec cell(imat33_t::from_cols({8,0,0},{0,8,0},{0,0,8}));
 
     for (int fcc_i=0; fcc_i<4; fcc_i++){
@@ -141,6 +136,48 @@ inline auto initialise_lattice(int L)
         }
     }
 
+    return cell;
+}
+
+inline auto make_primitive_unit_cell()
+{
+    using namespace pyrochlore;
+    QCcellspec cell(imat33_t::from_cols({0,4,4},{4,0,4},{4,4,0}));
+
+    const auto& r0 = fcc[0];
+    cell.add(Tetra(r0)); // the up tetra
+    cell.add(Tetra(r0-ipos_t{2,2,2})); // the down tetra
+    // the plaqs
+    for (int mu=0; mu<4; mu++){
+        cell.add(Spin(r0 + pyro[mu]));
+        cell.add(Plaq(r0 + ipos_t{2,2,2} - pyro[mu]));
+    }
+    
+    return cell;
+}
+
+
+// Generates a supercell of cubic dimension L
+inline auto initialise_lattice(int L, 
+        const std::string unit_cell_choice="cubic")
+{
+    using namespace pyrochlore;
+
+    const QCcellspec* u_cell;
+    
+    static const auto cubic_spec = make_cubic_unit_cell();
+    static const auto primitive_spec = make_primitive_unit_cell();
+    imat33_t Z;
+
+    if (unit_cell_choice == "cubic"){
+        u_cell = &cubic_spec;
+        Z = imat33_t::from_cols({L,0,0}, {0, L, 0}, {0, 0, L});
+    } else if (unit_cell_choice == "primitive") {
+        u_cell = &primitive_spec;
+        Z = imat33_t::from_cols({-L,L,L}, {L, -L, L}, {L, L, -L});
+    } else 
+        throw std::out_of_range("May only be 'cubic' or 'primitive'");
+
     std::vector<std::pair<int, int>> munu_map;
     for (int mu = 0; mu < 4; mu++) {
         for (int nu = mu + 1; nu < 4; nu++) {
@@ -148,9 +185,8 @@ inline auto initialise_lattice(int L)
         }
     }
 
-    auto Z = imat33_t::from_cols({L,0,0}, {0, L, 0}, {0, 0, L});
 
-    Supercell sc = build_supercell<Spin,Tetra,Plaq>(cell, Z);
+    Supercell sc = build_supercell<Spin,Tetra,Plaq>(*u_cell, Z);
 
 
     for (const auto& [I, cell] : sc.enumerate_cells() ) {
@@ -400,13 +436,15 @@ inline void identify_1o_clusters(
         const std::unordered_set<Tetra*>& seed_tetras,
         std::vector<QClusterMF>& clust){
 
-    // Simpler algorithm. Walk all unique bonds, and check whether
-    // the terminating tetras are quantum
+    // Walk all unique bonds, and check whether
+    // the terminating tetras are defect tetras
 
+    // colour spins by distance
     std::vector<Spin*> quantum_spins;
-    QuantumRule::eq2nn(seed_tetras, quantum_spins); // colour spins by distance
+    QuantumRule::eq2nn(seed_tetras, quantum_spins); 
 
-    // union find
+    // union find sets internal q_cluster_root pointers
+    // (used by is_quantum)
     for (auto qs : quantum_spins){
         for (auto ns : qs->neighbours){
             if (ns->q_cluster_root != nullptr &&
@@ -498,6 +536,32 @@ inline void write_geometry_group(hid_t file_id, QClattice& sc,
     H5Dclose(ds);
     H5Sclose(arr_space);
 
+
+    auto write_mat = [&](const char* name, const auto& matrix, hid_t type) {
+        hsize_t dims[2] = { 3, 3 };
+        decltype(matrix(0,0)) data_rm[9];
+        for (int i=0; i<9; i++){
+            data_rm[i] = matrix(i/3, i%3);
+        }
+        hid_t sp = H5Screate_simple(2, dims, nullptr);
+        hid_t ds = H5Dcreate2(grp, name, type, sp,
+                               H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT);
+        if (ds < 0) {
+            H5Sclose(sp);
+            H5Gclose(grp);
+            throw std::runtime_error(std::string("ssf_manager: failed to create ") + name);
+        }
+        H5Dwrite(ds, type, H5S_ALL, H5S_ALL, H5P_DEFAULT, data_rm);
+        H5Dclose(ds);
+        H5Sclose(sp);
+
+    };
+
+
+    write_mat("index_cell", sc.lattice.get_lattice_vectors(), H5T_NATIVE_INT64);
+    write_mat("recip_vectors", sc.lattice.get_reciprocal_lattice_vectors(), H5T_NATIVE_DOUBLE);
+
     H5Gclose(grp);
 }
+
 

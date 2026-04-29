@@ -115,3 +115,4 @@ inline void Q_manager::write_group(hid_t file_id, const char* group_name) {
 
     H5Gclose(group);
 }
+

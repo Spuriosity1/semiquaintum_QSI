@@ -62,7 +62,7 @@ inline ipos_t floordiv(const ipos_t& x, int base){
     return ipos_t(x[0]/base, x[1]/base, x[2]/base);
 }
 
-using MyCell = UnitCellSpecifier<Spin, Bond, Plaq>;
+using SpinCell = UnitCellSpecifier<Spin, Bond, Plaq>;
 using QClattice = Supercell<Spin, Bond, Plaq>;
 
 // Generates a supercell of cubic dimension L
@@ -70,7 +70,7 @@ inline auto initialise_lattice(int L)
 {
     using namespace pyrochlore;
 
-    MyCell cell(imat33_t::from_cols({8,0,0},{0,8,0},{0,0,8}));
+    SpinCell cell(imat33_t::from_cols({8,0,0},{0,8,0},{0,0,8}));
 
     for (int fcc_i=0; fcc_i<4; fcc_i++){
         const auto& r0 = fcc[fcc_i];
