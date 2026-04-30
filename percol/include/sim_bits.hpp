@@ -557,7 +557,6 @@ inline void write_geometry_group(hid_t file_id, QClattice& sc,
 
     };
 
-
     write_mat("index_cell", sc.lattice.get_lattice_vectors(), H5T_NATIVE_INT64);
     write_mat("recip_vectors", sc.lattice.get_reciprocal_lattice_vectors(), H5T_NATIVE_DOUBLE);
 
