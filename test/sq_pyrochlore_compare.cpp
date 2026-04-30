@@ -77,8 +77,8 @@ int main(int argc, char* argv[]) {
     // Build two identical lattice realisations.
     // Both QClattice objects must outlive their corresponding MCStateMF, because
     // MCStateMF holds raw Spin* / Plaq* pointers into the lattice's storage.
-    auto sc_mf    = initialise_lattice(L);
-    auto sc_exact = initialise_lattice(L);
+    auto sc_mf    = initialise_lattice_cubic(L);
+    auto sc_exact = initialise_lattice_cubic(L);
 
     MCStateMF state_mf, state_exact;
 

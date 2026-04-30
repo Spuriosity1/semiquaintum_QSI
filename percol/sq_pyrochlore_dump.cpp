@@ -91,7 +91,7 @@ int main (int argc, char *argv[]) {
     double p = ap.get<float>("p"); // site deletion probability
     size_t seed = ap.get<size_t>("--seed");
 
-    QClattice sc = initialise_lattice(L);
+    QClattice sc = initialise_lattice_cubic(L);
 
     size_t nsweep = ap.get<size_t>("--nsweep");
 

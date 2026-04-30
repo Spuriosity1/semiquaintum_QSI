@@ -161,6 +161,8 @@ struct QClusterBase {
         return Z;
     }
 
+    virtual ~QClusterBase() = default;
+
     // --- build H_base: ZZ bonds + transverse field, no boundary ---
     void build_matrix_rep();
     virtual void diagonalise(BoundaryConfig config) = 0;
