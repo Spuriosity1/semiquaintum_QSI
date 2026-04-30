@@ -160,7 +160,7 @@ def main(fnames):
         var_sq_sum = var_j**2
 
         for fname in files[1:]:
-            n_spins = load_n_spins(fnames[0])
+            n_spins = load_n_spins(fname)
 
             T, E_j, E2_j, n_j = load_raw(fname)
             if not np.allclose(T, T_ref):

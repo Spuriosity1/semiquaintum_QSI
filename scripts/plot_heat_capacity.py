@@ -110,6 +110,40 @@ def csv_stem(fname):
     return re.sub(r'\.h5$', '', os.path.basename(fname))
 
 
+def load_theory_data(fname):
+    """Load pre-computed Cv curves from a generate_theory output file.
+
+    Returns T_list, Cv_classical, Cv_theory, Cv_total (all per spin, ascending T).
+    """
+    with h5py.File(fname, "r") as f:
+        grp = f["heat_capacity"]
+        T     = np.array(grp["T_list"])
+        C_cl  = np.array(grp["Cv_classical"])
+        C_th  = np.array(grp["Cv_theory"])
+        C_tot = np.array(grp["Cv_total"])
+    idx   = np.argsort(T)
+    return T[idx], C_cl[idx], C_th[idx], C_tot[idx]
+
+
+def plot_theory_file(fname, axes_map, color, label, save_directory=None):
+    """Overlay theory curves on the C axis (dashed lines, no markers)."""
+    if 'C' not in axes_map:
+        return
+
+    T, C_cl, C_th, C_tot = load_theory_data(fname)
+    ax = axes_map['C']
+
+    ax.plot(T, C_tot, linestyle="--",  color=color, label=label)
+
+    if save_directory is not None:
+        stem = csv_stem(fname)
+        np.savetxt(
+            os.path.join(save_directory, stem + '.C.csv'),
+            np.column_stack([T, C_tot, C_cl, C_th]),
+            delimiter=',', header='T,Cv_total,Cv_classical,Cv_theory', comments='',
+        )
+
+
 def plot_file(fname, axes_map, color, label, save_directory=None):
     N = load_metadata(fname)
 
@@ -172,15 +206,20 @@ def plot_file(fname, axes_map, color, label, save_directory=None):
 
 def main(args):
 
-    fnames = args.files
-    labels = args.labels
-    plots  = args.plot
+    fnames  = args.files
+    labels  = args.labels
+    tnames  = args.theory  or []
+    tlabels = args.theory_labels
+    plots   = args.plot
 
-    cmap   = plt.colormaps["tab10"]
-    colors = [cmap(i) for i in range(len(fnames))]
+    n_total = len(fnames) + len(tnames)
+    cmap    = plt.colormaps["tab10"]
+    colors  = [cmap(i) for i in range(n_total)]
 
     if labels is None:
         labels = [os.path.basename(fname) for fname in fnames]
+    if tlabels is None:
+        tlabels = [os.path.basename(tn) for tn in tnames]
 
     axes_map = {}
 
@@ -202,6 +241,9 @@ def main(args):
 
     for fname, color, label in zip(fnames, colors, labels):
         plot_file(fname, axes_map, color, label, save_to)
+
+    for tname, color, label in zip(tnames, colors[len(fnames):], tlabels):
+        plot_theory_file(tname, axes_map, color, label, save_to)
 
     if 'C' in axes_map:
         ax = axes_map['C']
@@ -250,6 +292,9 @@ if __name__ == "__main__":
 
     parser.add_argument("files", nargs='+', help="output hdf5 files")
     parser.add_argument("--labels", nargs='+', help="labels for plot")
+    parser.add_argument("--theory", nargs='+', metavar="THEORY_H5",
+                        help="theory HDF5 files from generate_theory (overlaid as dashed lines on C plot)")
+    parser.add_argument("--theory_labels", nargs='+', help="labels for theory curves")
     parser.add_argument("--save_to", help="saves plot data to specified directory", default=None)
     parser.add_argument("--xlim", nargs=2, help="x limits", type=float)
     parser.add_argument("--y_logscale", action="store_true")
