@@ -144,7 +144,7 @@ int main(int argc, char* argv[]) {
     params.rng.seed(hashf(mseed ^ (dseed * 105)));
 
     // Build lattice and disorder realization
-    QClattice sc = initialise_lattice_cubic(L);
+    QClattice sc = initialise_lattice(L);
     std::unordered_set<Tetra*> seed_tetras;
     MCStateMF state;
 

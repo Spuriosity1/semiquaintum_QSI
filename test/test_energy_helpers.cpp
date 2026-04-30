@@ -87,7 +87,7 @@ int main(int argc, char** argv) {
         for (size_t trial = 0; trial < 5; ++trial) {
             const size_t seed = trial * 137 + 31;
 
-            QClattice sc = initialise_lattice_cubic(4);
+            QClattice sc = initialise_lattice(4);
             std::mt19937 rng(seed);
             std::unordered_set<Tetra*> seed_tetras;
             MCStateMF state;
