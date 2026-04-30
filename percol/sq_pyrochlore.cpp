@@ -219,7 +219,7 @@ int main (int argc, char *argv[]) {
     params.moves = parse_moves(ap.get<std::string>("--moves"));
 
 
-    QClattice sc = initialise_lattice(L, "primitive");
+    QClattice sc = initialise_lattice(L, "cubic");
 
     // Delete about p*100% of the spins
     // (Bernoulli sample)

@@ -26,8 +26,8 @@ def parse_args():
     )
     p.add_argument("filename", help="HDF5 output file from sq_pyrochlore")
     p.add_argument(
-        "--dataset", default="Sqq",
-        help="Which SSF dataset to plot: Sqq (neutron, default) or Szz (local-axis Ising)",
+        "--dataset", default="Szz",
+        help="Which SSF to plot: Szz (local-axis Ising, default) or Sqq (neutron)",
     )
     p.add_argument(
         "--T", type=int, default=0, metavar="INDEX",
@@ -51,7 +51,7 @@ def parse_args():
             default=(1,0,0))
     p.add_argument(
             "--e1", nargs=3, type=int, metavar=("QX","QY","QZ"),
-            help="first vector to extract S(q) along (integers)",
+            help="second vector to extract S(q) along (integers)",
             default=(0,1,0))
     p.add_argument(
         "--save", metavar="FILE",
@@ -60,22 +60,84 @@ def parse_args():
     return p.parse_args()
 
 
-def read_ssf(filename, dataset):
+def read_ssf(filename):
+    """Read raw correlator data from the /ssf HDF5 group.
+
+    Returns
+    -------
+    T_list    : (n_T,) float
+    n_samples : (n_T,) int
+    corr      : (n_T, n_sl, n_sl, n_kpoints) complex128
+    sl_pos    : (n_sl, 3) int64  — sublattice positions in lattice integer coords
+    n_spins   : int
+    k_dims    : (Lx, Ly, Lz) tuple
+    """
     with h5py.File(filename, "r") as f:
         grp = f["/ssf"]
-        T_list   = grp["T_list"][:]       # (n_T,)
-        n_samples = grp["n_samples"][:]   # (n_T,)
-        data     = grp[dataset][:]        # (n_T, n_k)
-        n_spins  = int(grp.attrs["n_spins"])
-        k_dims   = grp.attrs["k_dims"]    # [Lx, Ly, Lz]
-    return T_list, n_samples, data, n_spins, tuple(int(d) for d in k_dims)
+        T_list    = grp["T_list"][:]        # (n_T,)
+        n_samples = grp["n_samples"][:]     # (n_T,)
+        raw       = grp["corr"][:]          # (n_T, n_sl, n_sl, n_kpoints, 2)
+        sl_pos    = grp["sl_positions"][:]  # (n_sl, 3)
+        n_spins   = int(grp.attrs["n_spins"])
+        k_dims    = tuple(int(d) for d in grp.attrs["k_dims"])
+    corr = raw[..., 0] + 1j * raw[..., 1]  # (n_T, n_sl, n_sl, n_kpoints)
+    return T_list, n_samples, corr, sl_pos, n_spins, k_dims
+
 
 def read_recip_latvecs(filename):
     with h5py.File(filename, "r") as f:
-        grp = f["/geometry"]
-
-        B = np.array(grp["recip_vectors"][:])
+        B = np.array(f["/geometry/recip_vectors"][:])  # (3, 3), q = B @ K_centered
     return B
+
+
+# Pyrochlore local [111]-type axes, one per physical sublattice (tiled by sl % 4).
+_PYRO_AXES = np.array([[1,1,1], [-1,1,1], [1,-1,1], [1,1,-1]], dtype=float) / np.sqrt(3)
+
+
+def _phase_weights(k_dims, B, sl_pos):
+    """phase[k, mu, nu] = exp(i q(k) · (r_mu - r_nu))
+
+    k_dims : (Lx, Ly, Lz)
+    B      : (3,3) reciprocal lattice matrix; q = B @ K_centered
+    sl_pos : (n_sl, 3) integer sublattice positions
+
+    Returns shape (n_kpoints, n_sl, n_sl).
+    """
+    Lx, Ly, Lz = k_dims
+    # k-point indices in row-major order matching lil2's flat_from_idx3
+    K = np.indices((Lx, Ly, Lz)).reshape(3, -1).T.astype(float)  # (n_k, 3)
+    # 0-centre: wrap K[a] > L[a]//2 to K[a] - L[a]
+    K[:, 0] -= Lx * (K[:, 0] > Lx // 2)
+    K[:, 1] -= Ly * (K[:, 1] > Ly // 2)
+    K[:, 2] -= Lz * (K[:, 2] > Lz // 2)
+    q = K @ B.T  # (n_k, 3)
+
+    dr = sl_pos[:, None, :].astype(float) - sl_pos[None, :, :]  # (n_sl, n_sl, 3)
+    arg = np.einsum('ki,mni->kmn', q, dr)  # (n_k, n_sl, n_sl)
+    return np.exp(1j * arg)
+
+
+def contract(corr, k_dims, B, sl_pos, dataset):
+    """Contract (n_T, n_sl, n_sl, n_kpoints) correlator → (n_T, n_kpoints) real.
+
+    dataset : 'Szz' applies phase factors only;
+              'Sqq' also weights by pyrochlore local-axis dot products.
+    """
+    phase = _phase_weights(k_dims, B, sl_pos)  # (n_k, n_sl, n_sl)
+    n_sl = sl_pos.shape[0]
+
+    if dataset == "Sqq":
+        axis_dot = np.array([
+            [np.dot(_PYRO_AXES[mu % 4], _PYRO_AXES[nu % 4])
+             for nu in range(n_sl)]
+            for mu in range(n_sl)
+        ])  # (n_sl, n_sl)
+        weight = phase * axis_dot[None, :, :]  # (n_k, n_sl, n_sl)
+    else:
+        weight = phase  # Szz
+
+    # result[t, k] = Re Σ_{μν} weight[k,μ,ν] · corr[t,μ,ν,k]
+    return np.real(np.einsum('kmn,tmnk->tk', weight, corr))  # (n_T, n_k)
 
 
 def extract_plane(data, n_spins, k_dims, e0, e1):
@@ -102,7 +164,6 @@ def extract_plane(data, n_spins, k_dims, e0, e1):
     """
     Lx, Ly, Lz = k_dims
 
-
     n_T = data.shape[0]
 
     # Normalise to S(q) per site
@@ -118,15 +179,15 @@ def extract_plane(data, n_spins, k_dims, e0, e1):
     # => need to solve simultaneously
     # p0 e0[a] = 0 mod L[a]
     # divide by gcd(e0[a], L[a])
-    # p0 e0[a]/gcd = 0 mod L[a]/gcd 
+    # p0 e0[a]/gcd = 0 mod L[a]/gcd
     # so periodicity p0 = lcm( e0[a]/gcd(e0[a], L[a]) , a=1,2,3)
 
     p0 = 1
     p1 = 1
     for a in range(3):
         L = k_dims[a]
-        p0 = np.lcm(p0, L // np.gcd(int(e0[a]), L)) 
-        p1 = np.lcm(p1, L // np.gcd(int(e1[a]), L)) 
+        p0 = np.lcm(p0, L // np.gcd(int(e0[a]), L))
+        p1 = np.lcm(p1, L // np.gcd(int(e1[a]), L))
 
     # Build index arrays: Q(x,y) = e0*x + e1*y, x in [0,p0), y in [0,p1)
     xs = np.arange(p0)
@@ -137,6 +198,8 @@ def extract_plane(data, n_spins, k_dims, e0, e1):
     i0 = (e0[0] * xx + e1[0] * yy) % Lx   # (p0, p1)
     i1 = (e0[1] * xx + e1[1] * yy) % Ly
     i2 = (e0[2] * xx + e1[2] * yy) % Lz
+
+    print(k_dims)
 
     # Extract plane via fancy indexing
     S_slice = S4d[:, i0, i1, i2]              # (n_T, p0, p1)
@@ -157,8 +220,7 @@ def make_edges(axis):
     return np.append(axis - d / 2, axis[-1] + d / 2)
 
 
-def plot_panel(ax, S2d, h_axis, l_axis, T, dataset, log_scale, clim,
-               transform=((1,0),(0,1)) ):
+def plot_panel(ax, S2d, h_axis, l_axis, T, dataset, log_scale, clim):
     """Draw one 2D colour-map panel on *ax*."""
     if clim is not None:
         vmin, vmax = clim
@@ -178,8 +240,6 @@ def plot_panel(ax, S2d, h_axis, l_axis, T, dataset, log_scale, clim,
     h_edges = make_edges(h_axis)
     l_edges = make_edges(l_axis)
 
-#    x_points, y_points = np.einsum('ab,bcd->acd',np.array(transform) , np.meshgrid(h_edges, l_edges))
-
     # pcolormesh(x_edges, y_edges, C) where C has shape (len(y)-1, len(x)-1)
     mesh = ax.pcolormesh(
         h_edges, l_edges,
@@ -197,11 +257,14 @@ def plot_panel(ax, S2d, h_axis, l_axis, T, dataset, log_scale, clim,
 def main():
     args = parse_args()
 
-    T_list, n_samples, data, n_spins, k_dims = read_ssf(args.filename, args.dataset)
+    T_list, n_samples, corr, sl_pos, n_spins, k_dims = read_ssf(args.filename)
+    B = read_recip_latvecs(args.filename)
     n_T = len(T_list)
 
     e0 = np.array(args.e0, dtype=int)
     e1 = np.array(args.e1, dtype=int)
+
+    data = contract(corr, k_dims, B, sl_pos, args.dataset)  # (n_T, n_k)
 
     S_hhl, axis_0, axis_1 = extract_plane(data, n_spins, k_dims, e0, e1)
 
