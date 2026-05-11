@@ -19,7 +19,8 @@ inline void output_cluster_hist(std::ostream& os, const std::map<size_t, size_t>
         os<<"Clust. Size\tNumber per site\n";
     }
     for (auto& [s, count] : hist){
-        os<<s<<"\t"<<1.0*count/denom<<"\n";
+        double x = 1.0*count/denom;
+        os<<s<<"\t"<<x<<"\t"<<x*x<<"\n";
     }
 
 }
