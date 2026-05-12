@@ -189,6 +189,10 @@ int main (int argc, char *argv[]) {
         .help("Do not compute SSF correlators")
         .implicit_value(true).default_value(false);
 
+    ap.add_argument("--ignore_tcm")
+        .help("Do not compute transverse (S+S-) correlators")
+        .implicit_value(true).default_value(false);
+
     ap.add_argument("--verbosity", "-v")
         .help("Output verbosity: 0=silent, 1=normal, 2=+Q² spinon texture, 5=+cluster spectra")
         .default_value(1)
@@ -292,6 +296,7 @@ int main (int argc, char *argv[]) {
         energy_manager em;
         ssf_manager ssf(sc, pyrochlore::pyrochlore_local_axes());
         Q_manager sm;
+        transverse_corr_manager tcm(state, sc, n_step);
         double factor = exp( log(Tcold/Thot) / n_step );
 
         for (size_t i=0; i<n_step; i++){
@@ -300,6 +305,7 @@ int main (int argc, char *argv[]) {
             em.new_T(T);
             ssf.new_T(T);
             sm.new_T(T);
+            tcm.new_T(T);
 
             for (size_t n=0; n<nburn; n++) do_sweep();
 
@@ -308,6 +314,7 @@ int main (int argc, char *argv[]) {
                 em.sample(state.energy());
                 if (!ap.get<bool>("--ignore_ssf")) ssf.sample();
                 sm.sample(sc);
+                if (!ap.get<bool>("--ignore_tcm")) tcm.sample(params.beta);
             }
 
             if (verbosity >= 1) {
@@ -350,6 +357,7 @@ int main (int argc, char *argv[]) {
 
         if (!ap.get<bool>("--ignore_ssf")) ssf.write_group(file_id, "/ssf");
         sm.write_group(file_id, "/monopole");
+        if (!ap.get<bool>("--ignore_tcm")) tcm.write_group(file_id, "/transverse_corr");
 
 
     } else {
@@ -399,6 +407,7 @@ int main (int argc, char *argv[]) {
         energy_manager em(n_replicas);
         ssf_manager ssf(sc, pyrochlore::pyrochlore_local_axes(),
             n_replicas);
+        transverse_corr_manager tcm(state, sc, n_replicas);
 
         std::vector<int64_t> swap_accepted(n_replicas - 1, 0);
         std::vector<int64_t> swap_attempted(n_replicas - 1, 0);
@@ -429,10 +438,12 @@ int main (int argc, char *argv[]) {
                     for (size_t n = 0; n < nburn; n++) do_sweep();
                     em.set_T(1.0 / betas[r]);
                     ssf.set_T(1.0 / betas[r]);
+                    tcm.set_T(1.0 / betas[r]);
                     for (size_t n = 0; n < nsamp; n++) {
                         for (size_t n = 0; n < nsweep; n++) do_sweep();
                         em.sample(state.energy());
                         if (!ap.get<bool>("--ignore_ssf")) ssf.sample();
+                        if (!ap.get<bool>("--ignore_tcm")) tcm.sample(betas[r]);
                     }
                     replicas[r] = save_state(state);
                 }
@@ -472,6 +483,7 @@ int main (int argc, char *argv[]) {
         // Write all temperature bins (sorted by T) into the "energy" group.
         em.write_group(file_id, "/energy");
         if (!ap.get<bool>("--ignore_ssf")) ssf.write_group(file_id, "/ssf");
+        if (!ap.get<bool>("--ignore_tcm")) tcm.write_group(file_id, "/transverse_corr");
 
         // Write PT swap statistics.
         {

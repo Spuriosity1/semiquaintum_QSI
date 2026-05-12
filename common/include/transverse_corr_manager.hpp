@@ -3,6 +3,7 @@
 #include "abstract_manager.hpp"
 #include "quantum_cluster.hpp"
 #include "monte_carlo.hpp"
+#include "H5Apublic.h"
 #include "H5Gpublic.h"
 #include "H5Ipublic.h"
 #include "H5Ppublic.h"
@@ -152,9 +153,10 @@ public:
             const int D = cl.hilbert_dim();
             const int N = cl.n_spins();
 
-            // Boltzmann weights
+            // Boltzmann weights (subtract E0 for numerical stability at low T)
+            const double E0 = cl.eigenvalues[0]; // eigenvalues sorted ascending
             Eigen::VectorXd w(D);
-            for (int n = 0; n < D; n++) w[n] = std::exp(-beta * cl.eigenvalues[n]);
+            for (int n = 0; n < D; n++) w[n] = std::exp(-beta * (cl.eigenvalues[n] - E0));
             const double Z = w.sum();
             w /= Z;
 
@@ -174,7 +176,7 @@ public:
                         for (int b = 0; b < D; b++) {
                             if (!((b >> jj) & 1)) continue; // bit_jj must be 1
                             if ( (b >> ii) & 1)  continue; // bit_ii must be 0
-                            int b_flip = b ^ (1 << ii) ^ (1 << jj);
+                            int b_flip = b ^ ( (1 << ii) | (1 << jj) );
                             C += rho(b_flip, b);
                         }
                     }

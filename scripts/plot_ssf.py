@@ -2,12 +2,14 @@
 """
 plot_ssf.py — Plot the static structure factor S(q) in the (h,h,l) plane.
 
-Reads the /ssf group from sq_pyrochlore HDF5 output.  Q-points are expressed in
-conventional cubic reciprocal lattice units (r.l.u.), where (1,0,0) = 2π/a_cubic.
+Reads the /ssf or /transverse_corr group from sq_pyrochlore HDF5 output.
+Q-points are expressed in conventional cubic reciprocal lattice units (r.l.u.),
+where (1,0,0) = 2π/a_cubic.
 
 Usage examples:
     python scripts/plot_ssf.py output.h5
     python scripts/plot_ssf.py output.h5 --dataset Szz --log
+    python scripts/plot_ssf.py output.h5 --dataset Spm
     python scripts/plot_ssf.py output.h5 --T -1 --save hhl.png
     python scripts/plot_ssf.py output.h5 --all --save all_T.png
 """
@@ -27,7 +29,8 @@ def parse_args():
     p.add_argument("filename", help="HDF5 output file from sq_pyrochlore")
     p.add_argument(
         "--dataset", default="Szz",
-        help="Which SSF to plot: Szz (local-axis Ising, default) or Sqq (neutron)",
+        help="Which structure factor to plot: Szz (local-axis Ising, default), "
+             "Sqq (neutron), or Spm (spin-flip ⟨S⁺S⁻⟩ from quantum clusters)",
     )
     p.add_argument(
         "--T", type=int, default=0, metavar="INDEX",
@@ -88,6 +91,69 @@ def read_recip_latvecs(filename):
     with h5py.File(filename, "r") as f:
         B = np.array(f["/geometry/recip_vectors"][:])  # (3, 3), q = B @ K_centered
     return B
+
+
+def read_tcm(filename):
+    """Read real-space spin-flip correlator from the /transverse_corr HDF5 group.
+
+    Returns
+    -------
+    T_list          : (n_T,) float
+    n_samples       : (n_T,) int
+    corr            : (n_T, n_disp) float  — unnormalised sum over samples
+    disp_vectors    : (n_disp, 3) int64    — Δr = r_j - r_i in lattice integer coords
+    n_pairs         : (n_disp,) float      — mean pairs per sample for each displacement
+    n_quantum_spins : int
+    """
+    with h5py.File(filename, "r") as f:
+        grp = f["/transverse_corr"]
+        T_list          = grp["T_list"][:]
+        n_samples       = grp["n_samples"][:]
+        corr            = grp["corr"][:]
+        disp_vectors    = grp["disp_vectors"][:]
+        n_pairs         = grp["n_pairs_per_sample"][:]
+        n_quantum_spins = int(grp.attrs["n_quantum_spins"])
+    return T_list, n_samples, corr, disp_vectors, n_pairs, n_quantum_spins
+
+
+def compute_spm(corr, n_samples, disp_vectors, n_quantum_spins, k_dims, B):
+    """Fourier-transform the real-space spin-flip correlator to get S⁺⁻(q).
+
+    Computes  S⁺⁻(q_k) = (1/N) Σ_d corr[T,d]/n_samples[T] · exp(i q_k · Δr_d)
+
+    where the sum runs over all catalogued displacements d, q_k is the k-th
+    reciprocal lattice point, and N = n_quantum_spins.
+
+    Parameters
+    ----------
+    corr            : (n_T, n_disp) — accumulated, unnormalised ⟨S⁺S⁻⟩ sums
+    n_samples       : (n_T,)
+    disp_vectors    : (n_disp, 3) int
+    n_quantum_spins : int
+    k_dims          : (Lx, Ly, Lz)
+    B               : (3, 3) reciprocal lattice matrix  (q = K @ B.T)
+
+    Returns
+    -------
+    S : (n_T, n_k) real float
+    """
+    Lx, Ly, Lz = k_dims
+    K = np.indices((Lx, Ly, Lz)).reshape(3, -1).T.astype(float)  # (n_k, 3)
+    K[:, 0] -= Lx * (K[:, 0] > Lx // 2)
+    K[:, 1] -= Ly * (K[:, 1] > Ly // 2)
+    K[:, 2] -= Lz * (K[:, 2] > Lz // 2)
+    q = K @ B.T  # (n_k, 3)
+
+    # Phase: exp(i q_k · Δr_d), shape (n_k, n_disp)
+    arg = np.einsum('ki,di->kd', q, disp_vectors.astype(float))
+    phase = np.exp(1j * arg)
+
+    # Sample-averaged correlator, shape (n_T, n_disp)
+    C = corr / n_samples[:, None]
+
+    # S⁺⁻(q) = Re Σ_d C[T,d] · exp(i q · Δr_d),  normalised per site
+    S = np.real(np.einsum('kd,td->tk', phase, C))
+    return S / n_quantum_spins
 
 
 def _phase_weights(k_dims, B, sl_pos):
@@ -276,33 +342,44 @@ def plot_panel(ax, S2d, axis_0, axis_1, e0, e1, T, dataset, log_scale, clim):
         S2d.T,
         norm=norm, cmap="inferno", shading="auto",
     )
-    plt.colorbar(mesh, ax=ax, label=f"{dataset} / site")
+    cb_label = {"Szz": r"$S^{zz}$ / site", "Sqq": r"$S_\perp$ / site",
+                "Spm": r"$S^{+-}$ / site"}.get(dataset, f"{dataset} / site")
+    plt.colorbar(mesh, ax=ax, label=cb_label)
 
     ax.set_xlabel("$(%s)$  (r.l.u.)" % format_ax_label(e0, 'h', '~'))
     ax.set_ylabel("$(%s)$  (r.l.u.)" % format_ax_label(e1, 'l', '~'))
-    ax.set_title(f"$S(h,h,l)$  [{dataset}],  $T = {T:.4g}$")
+    label = {"Szz": r"$S^{zz}$", "Sqq": r"$S_\perp$", "Spm": r"$S^{+-}$"}.get(dataset, dataset)
+    ax.set_title(f"{label}  ($T = {T:.4g}$)")
     ax.set_aspect("equal")
 
 
 def main():
     args = parse_args()
 
-    T_list, n_samples, corr, sl_pos, n_spins, k_dims = read_ssf(args.filename)
     B = read_recip_latvecs(args.filename)
-    n_T = len(T_list)
-
     e0 = np.array(args.e0, dtype=int)
     e1 = np.array(args.e1, dtype=int)
 
-    if args.dataset == 'Szz':
-        data = contract_szz(corr, k_dims, B, sl_pos)  # (n_T, n_k)
-    elif args.dataset == 'Sqq':
-        data = contract_sperp(corr, k_dims, B, sl_pos)
+    if args.dataset == 'Spm':
+        T_list, n_samples, corr, disp_vectors, n_pairs, n_quantum_spins = \
+            read_tcm(args.filename)
+        with h5py.File(args.filename, "r") as f:
+            k_dims = tuple(int(d) for d in f["/ssf"].attrs["k_dims"])
+        # compute_spm already normalises per quantum spin; pass norm_factor=1
+        data = compute_spm(corr, n_samples, disp_vectors, n_quantum_spins, k_dims, B)
+        norm_factor = 1
     else:
-        raise ValueError("dataset may only be Szz or Sqq")
+        T_list, n_samples, corr, sl_pos, n_spins, k_dims = read_ssf(args.filename)
+        if args.dataset == 'Szz':
+            data = contract_szz(corr, k_dims, B, sl_pos)  # (n_T, n_k)
+        elif args.dataset == 'Sqq':
+            data = contract_sperp(corr, k_dims, B, sl_pos)
+        else:
+            raise ValueError("--dataset must be Szz, Sqq, or Spm")
+        norm_factor = n_spins
 
-
-    S_hhl, axis_0, axis_1 = extract_plane(data, n_spins, k_dims, e0, e1)
+    n_T = len(T_list)
+    S_hhl, axis_0, axis_1 = extract_plane(data, norm_factor, k_dims, e0, e1)
 
     if args.all:
         ncols = min(4, n_T)
