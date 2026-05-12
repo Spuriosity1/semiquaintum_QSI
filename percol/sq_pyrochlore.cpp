@@ -12,6 +12,7 @@
 #include "monte_carlo.hpp"
 #include "sim_bits.hpp"
 #include "ssf_manager.hpp"
+#include "transverse_corr_manager.hpp"
 
 using namespace std;
 

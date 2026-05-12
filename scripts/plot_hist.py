@@ -41,7 +41,7 @@ def log_rebin(sizes, counts, count_vars,
         binned_count_vars[k] = count_vars[mask].sum()
 
         binned_spin_counts[k] = (counts[mask] * sizes[mask]).sum()
-        binned_count_vars[k] = (
+        binned_spin_count_vars[k] = (
                 count_vars[mask] * sizes[mask] * sizes[mask]).sum()
 
     
@@ -69,9 +69,9 @@ def main():
     fig, ax = plt.subplots(figsize=(3.5, 3))
 
     if args.plot_ratio:
-        ax.set_ylabel(r"Cluster density")
+        ax.set_ylabel(r"$s\cdot n(s)$")
     else:
-        ax.set_ylabel("Probability density per spin")
+        ax.set_ylabel("$n(s)$")
 
     nfiles = len(args.histfile)
     cmap = plt.colormaps['jet']
@@ -95,7 +95,8 @@ def main():
             sizes=np.array(f["sizes"][()])
             counts=np.array(f["counts"][()])
             nsweep=np.array(f["nsweep"][()])
-            count_vars=np.array(f["var"][()])
+            var_key = "var_sweep" if "var_sweep" in f else "var"
+            count_vars=np.array(f[var_key][()])
             N = int(np.array(f["N"]))
 
         max_decade = np.ceil(10*np.log10(N))/10
@@ -104,11 +105,11 @@ def main():
                                        n_bins=int(max_decade*10+1))
         color = cmap(norm(p))
         if args.plot_ratio:
-            ys = bsc / (N * nsweep)
-            ys_error = np.sqrt(v_bsc) / (N * nsweep)
+            ys = bsc / (N * (1-p) * nsweep)
+            ys_error = np.sqrt(v_bsc / nsweep) / N / (1-p)
         else:
-            ys = bc / (N * nsweep)
-            ys_error = np.sqrt(v_bc) / (N * nsweep)
+            ys = bc / (N * (1-p) * nsweep)
+            ys_error = np.sqrt(v_bc / nsweep) / N / (1-p)
 
         x = np.empty(lefts.size *3, dtype=lefts.dtype)
         err = np.zeros(lefts.size *3, dtype=lefts.dtype)
@@ -127,10 +128,10 @@ def main():
 
     if (args.title is not None):
         ax.set_title(args.title)
-    ax.set_xlabel("Cluster Size")
+    ax.set_xlabel("Cluster Size $s$")
 
     if args.plot_legend:
-        fig.legend()
+        ax.legend(prop={'size': 8})
     elif args.plot_colorbar:
         cbar = fig.colorbar(sm, ax=ax)
         cbar.set_label("Disorder fraction $p$")

@@ -69,12 +69,20 @@ void QCluster::initialise(){
     if ((int)classical_boundary_spins.size() <= MAX_CACHED_BOUNDARY) {
         int n_configs = 1 << (int)classical_boundary_spins.size();
         auto cache = std::make_shared<std::vector<Eigen::VectorXd>>(n_configs);
+
+        const long long evec_elems = (long long)hilbert_dim() * hilbert_dim() * n_configs;
+        std::shared_ptr<std::vector<Eigen::MatrixXd>> evcache;
+        if (evec_elems <= MAX_EVEC_CACHED_ELEMENTS)
+            evcache = std::make_shared<std::vector<Eigen::MatrixXd>>(n_configs);
+
         for (int cfg = 0; cfg < n_configs; cfg++) {
             auto H = ham_with_classical_bcs(classical_boundary_spins, (uint32_t)cfg);
             Eigen::SelfAdjointEigenSolver<Eigen::MatrixXd> solver(H);
             (*cache)[cfg] = solver.eigenvalues();
+            if (evcache) (*evcache)[cfg] = solver.eigenvectors();
         }
         eval_cache = cache;
+        evec_cache = evcache;
     }
 
     diagonalise(boundary_config);
@@ -91,12 +99,19 @@ void QClusterMF::initialise(){
         int n_configs = 1 << (int)classical_boundary_spins.size();
         auto ecache = std::make_shared<std::vector<Eigen::VectorXd>>(n_configs);
         auto scache = std::make_shared<std::vector<Eigen::MatrixXd>>(n_configs);
+
+        const long long evec_elems = (long long)hilbert_dim() * hilbert_dim() * n_configs;
+        std::shared_ptr<std::vector<Eigen::MatrixXd>> evcache;
+        if (evec_elems <= MAX_EVEC_CACHED_ELEMENTS)
+            evcache = std::make_shared<std::vector<Eigen::MatrixXd>>(n_configs);
+
         for (int cfg = 0; cfg < n_configs; cfg++) {
             auto H = ham_with_classical_bcs(classical_boundary_spins, (uint32_t)cfg);
             Eigen::SelfAdjointEigenSolver<Eigen::MatrixXd> solver(H);
             (*ecache)[cfg] = solver.eigenvalues();
             const auto& evals = solver.eigenvalues();
             const auto& psi   = solver.eigenvectors();
+            if (evcache) (*evcache)[cfg] = psi;
             Eigen::MatrixXd sz(evals.size(), (int)spins.size());
             for (int site_i = 0; site_i < (int)spins.size(); site_i++) {
                 for (int n = 0; n < (int)evals.size(); n++) {
@@ -112,6 +127,7 @@ void QClusterMF::initialise(){
         }
         eval_cache = ecache;
         sz_cache   = scache;
+        evec_cache = evcache;
     }
 
     diagonalise(boundary_config);

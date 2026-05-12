@@ -115,6 +115,9 @@ struct QClusterBase {
     using BoundaryConfig = uint32_t; // bitmask over boundary spins; bit i set ↔ classical_boundary_spins[i] == +1
 
     static constexpr int MAX_CACHED_BOUNDARY = 12; // cache if 2^k <= 4096 configs
+    // Cache eigenvectors only if D^2 * n_configs <= this (≈8 MB per cluster).
+    // For N=6/k=8: 64^2 * 256 = 1 M elements ✓.  N=8/k=4: 256^2 * 16 = 1 M ✓.
+    static constexpr long long MAX_EVEC_CACHED_ELEMENTS = 1LL << 20;
 
     std::vector<Spin*> spins;
     std::vector<Spin*> classical_boundary_spins;
@@ -122,6 +125,14 @@ struct QClusterBase {
     // precomputed spectrum cache (null = cluster too large, fall back to eigensolver)
     std::shared_ptr<const std::vector<Eigen::VectorXd>> eval_cache;
 
+    // precomputed eigenvector cache, parallel to eval_cache (null if memory limit exceeded)
+    std::shared_ptr<const std::vector<Eigen::MatrixXd>> evec_cache;
+
+    // Returns pointer to eigenvectors for current boundary_config, or nullptr if uncached.
+    const Eigen::MatrixXd* get_current_evecs() const {
+        if (!evec_cache) return nullptr;
+        return &(*evec_cache)[boundary_config];
+    }
 
     // -- current state for MC --
     int eigenstate_idx;
