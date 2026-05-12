@@ -90,10 +90,6 @@ def read_recip_latvecs(filename):
     return B
 
 
-# Pyrochlore local [111]-type axes, one per physical sublattice (tiled by sl % 4).
-_PYRO_AXES = np.array([[1,1,1], [-1,1,1], [1,-1,1], [1,1,-1]], dtype=float) / np.sqrt(3)
-
-
 def _phase_weights(k_dims, B, sl_pos):
     """phase[k, mu, nu] = exp(i q(k) · (r_mu - r_nu))
 
@@ -117,27 +113,48 @@ def _phase_weights(k_dims, B, sl_pos):
     return np.exp(1j * arg)
 
 
-def contract(corr, k_dims, B, sl_pos, dataset):
+def contract_szz(corr, k_dims, B, sl_pos):
     """Contract (n_T, n_sl, n_sl, n_kpoints) correlator → (n_T, n_kpoints) real.
-
-    dataset : 'Szz' applies phase factors only;
-              'Sqq' also weights by pyrochlore local-axis dot products.
     """
     phase = _phase_weights(k_dims, B, sl_pos)  # (n_k, n_sl, n_sl)
-    n_sl = sl_pos.shape[0]
-
-    if dataset == "Sqq":
-        axis_dot = np.array([
-            [np.dot(_PYRO_AXES[mu % 4], _PYRO_AXES[nu % 4])
-             for nu in range(n_sl)]
-            for mu in range(n_sl)
-        ])  # (n_sl, n_sl)
-        weight = phase * axis_dot[None, :, :]  # (n_k, n_sl, n_sl)
-    else:
-        weight = phase  # Szz
 
     # result[t, k] = Re Σ_{μν} weight[k,μ,ν] · corr[t,μ,ν,k]
-    return np.real(np.einsum('kmn,tmnk->tk', weight, corr))  # (n_T, n_k)
+    return np.real(np.einsum('kmn,tmnk->tk', phase, corr))  # (n_T, n_k)
+
+
+
+_sl_z_axis = np.array(
+        [[ -1., -1., -1.], [-1., 1., 1.], [1., -1., 1.], [1., 1., -1.]]
+        )/np.sqrt(3)
+
+def contract_sperp(corr, k_dims, B, sl_pos):
+    """Contract (n_T, n_sl, n_sl, n_kpoints) correlator → (n_T, n_kpoints) real.
+
+    Computes the neutron S_perp(q) = Σ_{μν} (ẑ_μ·ẑ_ν − (q̂·ẑ_μ)(q̂·ẑ_ν)) exp(iq·Δr_{μν}) C_{μν}(q)
+    with the transverse projector (I − q̂q̂) evaluated at each k-point individually.
+    """
+    Lx, Ly, Lz = k_dims
+    K = np.indices((Lx, Ly, Lz)).reshape(3, -1).T.astype(float)  # (n_k, 3)
+    K[:, 0] -= Lx * (K[:, 0] > Lx // 2)
+    K[:, 1] -= Ly * (K[:, 1] > Ly // 2)
+    K[:, 2] -= Lz * (K[:, 2] > Lz // 2)
+    q_vecs = K @ B.T                                               # (n_k, 3)
+    q_norm = np.linalg.norm(q_vecs, axis=1, keepdims=True)
+    q_norm = np.where(q_norm == 0, 1.0, q_norm)                   # guard Γ point
+    q_hat = q_vecs / q_norm                                        # (n_k, 3)
+
+    # Transverse projector per k-point: P[k,a,b] = δ_ab − q̂_k^a q̂_k^b
+    P = np.eye(3)[None] - q_hat[:, :, None] * q_hat[:, None, :]   # (n_k, 3, 3)
+
+    phase = _phase_weights(k_dims, B, sl_pos)                      # (n_k, n_sl, n_sl)
+    n_sl = sl_pos.shape[0]
+
+    # Local axes for each sublattice
+    z = np.array([_sl_z_axis[s % 4] for s in range(n_sl)])        # (n_sl, 3)
+    # weight[k,μ,ν] = ẑ_μ · P(k) · ẑ_ν
+    weight = np.einsum('ma,kab,nb->kmn', z, P, z)                  # (n_k, n_sl, n_sl)
+
+    return np.real(np.einsum('kmn,kmn,tmnk->tk', phase, weight, corr))  # (n_T, n_k)
 
 
 def extract_plane(data, n_spins, k_dims, e0, e1):
@@ -220,7 +237,20 @@ def make_edges(axis):
     return np.append(axis - d / 2, axis[-1] + d / 2)
 
 
-def plot_panel(ax, S2d, h_axis, l_axis, T, dataset, log_scale, clim):
+def format_ax_label(vector, letter, sep=' '):
+    s = []
+    for v in vector:
+        if int(v) == 0:
+            s.append('0')
+        elif int(v) == 1:
+            s.append( letter)
+        elif int(v) == -1:
+            s.append('-' + letter)
+        else:
+            s.append(str(int(v)) + letter)
+    return sep.join(s)
+
+def plot_panel(ax, S2d, axis_0, axis_1, e0, e1, T, dataset, log_scale, clim):
     """Draw one 2D colour-map panel on *ax*."""
     if clim is not None:
         vmin, vmax = clim
@@ -237,8 +267,8 @@ def plot_panel(ax, S2d, h_axis, l_axis, T, dataset, log_scale, clim):
     else:
         norm = mcolors.Normalize(vmin=vmin, vmax=vmax)
 
-    h_edges = make_edges(h_axis)
-    l_edges = make_edges(l_axis)
+    h_edges = make_edges(axis_0)
+    l_edges = make_edges(axis_1)
 
     # pcolormesh(x_edges, y_edges, C) where C has shape (len(y)-1, len(x)-1)
     mesh = ax.pcolormesh(
@@ -248,8 +278,8 @@ def plot_panel(ax, S2d, h_axis, l_axis, T, dataset, log_scale, clim):
     )
     plt.colorbar(mesh, ax=ax, label=f"{dataset} / site")
 
-    ax.set_xlabel("$h$  (r.l.u.)")
-    ax.set_ylabel("$l$  (r.l.u.)")
+    ax.set_xlabel("$(%s)$  (r.l.u.)" % format_ax_label(e0, 'h', '~'))
+    ax.set_ylabel("$(%s)$  (r.l.u.)" % format_ax_label(e1, 'l', '~'))
     ax.set_title(f"$S(h,h,l)$  [{dataset}],  $T = {T:.4g}$")
     ax.set_aspect("equal")
 
@@ -264,7 +294,13 @@ def main():
     e0 = np.array(args.e0, dtype=int)
     e1 = np.array(args.e1, dtype=int)
 
-    data = contract(corr, k_dims, B, sl_pos, args.dataset)  # (n_T, n_k)
+    if args.dataset == 'Szz':
+        data = contract_szz(corr, k_dims, B, sl_pos)  # (n_T, n_k)
+    elif args.dataset == 'Sqq':
+        data = contract_sperp(corr, k_dims, B, sl_pos)
+    else:
+        raise ValueError("dataset may only be Szz or Sqq")
+
 
     S_hhl, axis_0, axis_1 = extract_plane(data, n_spins, k_dims, e0, e1)
 
@@ -274,7 +310,7 @@ def main():
         fig, axes = plt.subplots(nrows, ncols, figsize=(4.5 * ncols, 4.0 * nrows))
         axes = np.array(axes).flatten()
         for i in range(n_T):
-            plot_panel(axes[i], S_hhl[i], axis_0, axis_1,
+            plot_panel(axes[i], S_hhl[i], axis_0, axis_1, args.e0, args.e1,
                        T_list[i], args.dataset, args.log, args.clim)
         for i in range(n_T, len(axes)):
             axes[i].set_visible(False)
@@ -288,7 +324,7 @@ def main():
             )
             sys.exit(1)
         fig, ax = plt.subplots(figsize=(5.5, 5.0))
-        plot_panel(ax, S_hhl[t_idx], axis_0, axis_1,
+        plot_panel(ax, S_hhl[t_idx], axis_0, axis_1, args.e0, args.e1,
                    T_list[t_idx], args.dataset, args.log, args.clim)
 
     fig.tight_layout()

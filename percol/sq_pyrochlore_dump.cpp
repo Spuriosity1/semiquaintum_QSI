@@ -6,7 +6,7 @@
 #include "energy_manager.hpp"
 #include <argparse/argparse.hpp>
 #include <unordered_set>
-#include <fstream>
+#include <hdf5.h>
 
 #include "quantum_cluster.hpp"
 #include "monte_carlo.hpp"
@@ -99,7 +99,8 @@ int main (int argc, char *argv[]) {
     std::unordered_set<Tetra*> seed_tetras;
 
 
-    std::map<size_t, size_t> cluster_hist;
+    std::map<size_t, size_t>    cluster_hist;    // Σ_n x_n[s]
+    std::map<size_t, uint64_t>  cluster_hist_sq; // Σ_n x_n[s]^2
 
     auto cdef = ap.get<std::string>("--cluster_def");
 
@@ -109,46 +110,106 @@ int main (int argc, char *argv[]) {
         // (Bernoulli sample)
         delete_spins(rng, sc, p, seed_tetras);
         // Identify the quantum-cluster distribution
-        
+
+        std::map<size_t, size_t> sweep_hist;
+
         if (cdef == "nn2_mf"){
             std::vector<QClusterMF> clusters;
-            // populates state.clusters
             identify_1o_clusters(seed_tetras, clusters);
-
-            for (const auto& Q : clusters) cluster_hist[ Q.spins.size() ]++;
-            
+            for (const auto& Q : clusters) sweep_hist[ Q.spins.size() ]++;
         } else {
-            //
             std::vector<QCluster> clusters;
-            // populates state.clusters
             if (cdef == "nn2"){
                 identify_quantum_clusters<QuantumRule::eq2nn>(seed_tetras, clusters);
             } else if (cdef == "nn24") {
                 identify_quantum_clusters<QuantumRule::eq24nn>(seed_tetras, clusters);
             }
-
-            for (const auto& Q : clusters) cluster_hist[ Q.spins.size() ]++;
+            for (const auto& Q : clusters) sweep_hist[ Q.spins.size() ]++;
         }
 
+        for (auto& [sz, cnt] : sweep_hist) {
+            cluster_hist[sz]    += cnt;
+            cluster_hist_sq[sz] += static_cast<uint64_t>(cnt) * cnt;
+        }
     }
 
 
     std::filesystem::path out_dir = ap.get<std::string>("--output_dir");
 
-    std::string file_stem = make_filestem(L, p, seed, nsweep, cdef, "hist");
-    auto hist_fname = out_dir/(file_stem+".csv");
-    std::ofstream ofs(hist_fname);
-    size_t denom = L*L*L*16*nsweep;
-    output_cluster_hist(ofs, cluster_hist, 1);
-    output_cluster_hist(std::cout, cluster_hist, denom);
-
-    double n_quantum=0;
-    for (auto& [size, n ] : cluster_hist){
-        n_quantum += n*size;
+    // flatten maps into parallel arrays
+    std::vector<int64_t> h_sizes, h_counts, h_counts_sq;
+    std::vector<double>  h_var;
+    h_sizes.reserve(cluster_hist.size());
+    h_counts.reserve(cluster_hist.size());
+    h_counts_sq.reserve(cluster_hist.size());
+    h_var.reserve(cluster_hist.size());
+    for (auto& [sz, cnt] : cluster_hist) {
+        const uint64_t sq  = cluster_hist_sq.count(sz) ? cluster_hist_sq.at(sz) : 0;
+        const double   mu  = static_cast<double>(cnt) / nsweep;
+        // Bessel-corrected variance: (Σx² - (Σx)²/N) / (N-1)
+        const double   var = (static_cast<double>(sq) - static_cast<double>(cnt)*cnt / nsweep)
+                             / (nsweep - 1);
+        h_sizes.push_back(static_cast<int64_t>(sz));
+        h_counts.push_back(static_cast<int64_t>(cnt));
+        h_counts_sq.push_back(static_cast<int64_t>(sq));
+        h_var.push_back(var);
+        (void)mu;
     }
-    std::cout<<100*n_quantum / denom <<"% of spins are in clusters\n";
+    const hsize_t nbins = h_sizes.size();
 
-    std::cout<<"Saved hist to to "<<hist_fname.string()<<std::endl;
+    const int64_t N      = static_cast<int64_t>(L)*L*L*16;
+    const int64_t nsweep_i = static_cast<int64_t>(nsweep);
+
+    std::string file_stem = make_filestem(L, p, seed, nsweep, cdef, "hist");
+    auto hist_fname = out_dir / (file_stem + ".h5");
+
+    hid_t file_id = H5Fcreate(hist_fname.string().c_str(), H5F_ACC_TRUNC, H5P_DEFAULT, H5P_DEFAULT);
+    if (file_id < 0)
+        throw std::runtime_error("Failed to create HDF5 file: " + hist_fname.string());
+
+    // write 1-D arrays
+    {
+        hid_t space = H5Screate_simple(1, &nbins, nullptr);
+        auto write_i64 = [&](const char* name, const int64_t* data) {
+            hid_t ds = H5Dcreate2(file_id, name, H5T_NATIVE_INT64, space,
+                                   H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT);
+            H5Dwrite(ds, H5T_NATIVE_INT64, H5S_ALL, H5S_ALL, H5P_DEFAULT, data);
+            H5Dclose(ds);
+        };
+        auto write_f64 = [&](const char* name, const double* data) {
+            hid_t ds = H5Dcreate2(file_id, name, H5T_NATIVE_DOUBLE, space,
+                                   H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT);
+            H5Dwrite(ds, H5T_NATIVE_DOUBLE, H5S_ALL, H5S_ALL, H5P_DEFAULT, data);
+            H5Dclose(ds);
+        };
+        write_i64("sizes",      h_sizes.data());
+        write_i64("counts",     h_counts.data());
+        write_i64("counts_sq",  h_counts_sq.data());
+        write_f64("var",        h_var.data());
+        H5Sclose(space);
+    }
+
+    // write scalars
+    {
+        hid_t space = H5Screate(H5S_SCALAR);
+        auto write_scalar = [&](const char* name, int64_t val) {
+            hid_t ds = H5Dcreate2(file_id, name, H5T_NATIVE_INT64, space,
+                                   H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT);
+            H5Dwrite(ds, H5T_NATIVE_INT64, H5S_ALL, H5S_ALL, H5P_DEFAULT, &val);
+            H5Dclose(ds);
+        };
+        write_scalar("nsweep", nsweep_i);
+        write_scalar("N",      N);
+        H5Sclose(space);
+    }
+
+    H5Fclose(file_id);
+
+    double n_quantum = 0;
+    for (auto& [sz, cnt] : cluster_hist) n_quantum += cnt * sz;
+    const size_t denom = static_cast<size_t>(N) * nsweep;
+    std::cout << 100.0 * n_quantum / denom << "% of spins are in clusters\n";
+    std::cout << "Saved hist to " << hist_fname.string() << std::endl;
 
 
     if (ap.get<bool>("--save_spins")){

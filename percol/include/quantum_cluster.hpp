@@ -153,6 +153,11 @@ struct QClusterBase {
         return eigenvalues[eigenstate_idx];
     }
 
+    // Returns <σ^z> for spin s in the current eigenstate, in the same ±1 convention
+    // as Spin::ising_val.  Base implementation returns 0 (for exact QCluster where
+    // per-spin expectation values are not tracked; override in QClusterMF).
+    virtual double mean_sz(const Spin* /*s*/) const { return 0.0; }
+
     double partition_function(double beta) const {
         double Z=0;
         for (auto& E : eigenvalues){
@@ -209,6 +214,8 @@ struct QClusterMF : public QClusterBase {
         diagonalise(boundary_config);
     }
             
+
+    double mean_sz(const Spin* s) const override { return expect_Sz(s); }
 
     double expect_Sz(const Spin* s) const {
         auto i = this->spin_index(s);

@@ -63,6 +63,7 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("histfiles", nargs='+', help="hist CSV files from sq_pyrochlore_dump")
     parser.add_argument("--save", metavar="FILE", help="save figure instead of showing")
+    parser.add_argument("--plot-remainder", nargs='+', help="ctypes to plot 1- of")
     args = parser.parse_args()
 
     # group files by (L, clust_type)
@@ -88,15 +89,15 @@ def main():
     styles = {
             'nn2': {
         'ls': None, 
-        'color': 'k',
-        'label': '2nn',
-        'marker': '+'
+        'color': 'g',
+        'label': r'$O(J_\pm)$',
+        'marker': None
         },
             'nn24': {
         'ls': None, 
-        'color': 'r',
-        'label': r'2nn~$\cup$~4nn',
-        'marker': 'x'
+        'color': 'b',
+        'label': r'$O(J_\pm^2/J_{zz})$',
+        'marker': None
         }
     }
 
@@ -111,15 +112,20 @@ def main():
 #    L_values = sorted({L for L, _ in groups})
 #    L_color  = {L: cmap(i) for i, L in enumerate(L_values)}
 
+    dstore= {}
     for (L, ctype), points in sorted(groups.items()):
         points.sort()
         ps, fracs = zip(*points)
 
         st = styles.get(ctype, default_style(ctype))
-        ax.plot(ps, fracs/(1-np.array(ps)), **st)
+        fracs_corrected=fracs/(1-np.array(ps))
+        ax.plot(ps, fracs_corrected, **st)
+
+        if args.plot_remainder and ctype=='nn24':
+            ax.plot(ps, 1.-fracs_corrected, 'k', label='ringflip only')
 
     ax.set_xlabel("Disorder concentration $p$")
-    ax.set_ylabel("Fraction of spins in quantum clusters")
+    ax.set_ylabel("Fraction of remaining spins")
     ax.set_xlim(left=0)
     ax.set_ylim(0, 1)
     ax.legend(fontsize=8)

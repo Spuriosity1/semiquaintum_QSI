@@ -184,6 +184,10 @@ int main (int argc, char *argv[]) {
         .default_value(1)
         .scan<'i', int>();
 
+    ap.add_argument("--ignore_ssf")
+        .help("Do not compute SSF correlators")
+        .implicit_value(true).default_value(false);
+
     ap.add_argument("--verbosity", "-v")
         .help("Output verbosity: 0=silent, 1=normal, 2=+Q² spinon texture, 5=+cluster spectra")
         .default_value(1)
@@ -301,7 +305,7 @@ int main (int argc, char *argv[]) {
             for (size_t n=0; n<nsamp; n++){
                 for (size_t n=0; n<nsweep; n++) do_sweep();
                 em.sample(state.energy());
-                ssf.sample();
+                if (!ap.get<bool>("--ignore_ssf")) ssf.sample();
                 sm.sample(sc);
             }
 
@@ -342,7 +346,8 @@ int main (int argc, char *argv[]) {
         std::cout << "Done! Writing to file... " << std::endl;
 
         em.write_group(file_id, "/energy");
-        ssf.write_group(file_id, "/ssf");
+
+        if (!ap.get<bool>("--ignore_ssf")) ssf.write_group(file_id, "/ssf");
         sm.write_group(file_id, "/monopole");
 
 
@@ -426,7 +431,7 @@ int main (int argc, char *argv[]) {
                     for (size_t n = 0; n < nsamp; n++) {
                         for (size_t n = 0; n < nsweep; n++) do_sweep();
                         em.sample(state.energy());
-                        ssf.sample();
+                        if (!ap.get<bool>("--ignore_ssf")) ssf.sample();
                     }
                     replicas[r] = save_state(state);
                 }
@@ -465,7 +470,7 @@ int main (int argc, char *argv[]) {
 
         // Write all temperature bins (sorted by T) into the "energy" group.
         em.write_group(file_id, "/energy");
-        ssf.write_group(file_id, "/ssf");
+        if (!ap.get<bool>("--ignore_ssf")) ssf.write_group(file_id, "/ssf");
 
         // Write PT swap statistics.
         {

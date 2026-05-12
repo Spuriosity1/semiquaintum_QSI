@@ -16,6 +16,20 @@
 #include <vector>
 
 
+// Returns the effective σ^z value (range ±1) for a spin:
+//   - deleted spins         → 0
+//   - quantum (MF cluster)  → <σ^z> from the current eigenstate (QClusterMF::mean_sz)
+//   - quantum (exact)       → 0  (QClusterBase::mean_sz default)
+//   - classical / boundary  → ising_val (±1)
+//
+// Note: accumulating conj(Ã_i)·Ã_j with this field gives <σ^z_i><σ^z_j> for
+// quantum sites, not the full <σ^z_i σ^z_j> correlator (mean-field factorization).
+inline double spin_sz_val(const Spin& s) {
+    if (s.deleted)      return 0.0;
+    if (s.is_quantum()) return s.owning_cluster->mean_sz(&s);
+    return static_cast<double>(s.ising_val);
+}
+
 // Measures two complementary static structure factors for Ising spins.
 //
 // Accumulates the sublattice-pair correlator
@@ -44,7 +58,7 @@
 class ssf_manager : public abstract_manager {
     using IsingFT = FourierTransformC2C<
         Spin,
-        FieldAccessor<Spin, &Spin::ising_val>,
+        FieldAccessor<Spin, spin_sz_val>,
         Spin, Tetra, Plaq>;
 
     // --- Declaration order determines initializer-list initialization order ---
@@ -105,7 +119,9 @@ public:
 
     // Fourier-transform current ising_val configuration and accumulate C_{μν}(q).
     void sample() {
-        assert(!T_list.empty());
+        if(T_list.empty()){
+            throw std::runtime_error("Tried to sample without setting temperature");
+        }
         ft.transform();
 //        corr_[curr_idx] += correlate(ft.get_buffer(), ft.get_buffer());
         correlate_add(corr_[curr_idx], ft.get_buffer(), ft.get_buffer());
