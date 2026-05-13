@@ -182,7 +182,7 @@ int main (int argc, char *argv[]) {
 
     ap.add_argument("--n_replica_swaps")
         .help("Number of attempted replica exchanges per temperature")
-        .default_value(1)
+        .default_value(10)
         .scan<'i', int>();
 
     ap.add_argument("--ignore_ssf")
@@ -294,8 +294,8 @@ int main (int argc, char *argv[]) {
         /// STANDARD ANNEALING LOOP ///////////////////////////////////////////
 
         energy_manager em;
+        Q_manager mm;
         ssf_manager ssf(sc, pyrochlore::pyrochlore_local_axes());
-        Q_manager sm;
         transverse_corr_manager tcm(state, sc, n_step);
         double factor = exp( log(Tcold/Thot) / n_step );
 
@@ -303,18 +303,23 @@ int main (int argc, char *argv[]) {
             params.beta /= factor;
             const double T = 1./params.beta;
             em.new_T(T);
-            ssf.new_T(T);
-            sm.new_T(T);
-            tcm.new_T(T);
+            mm.new_T(T);
 
             for (size_t n=0; n<nburn; n++) do_sweep();
 
-            for (size_t n=0; n<nsamp; n++){
-                for (size_t n=0; n<nsweep; n++) do_sweep();
+            for (size_t n=1; n<=nsamp; n++){
+                for (size_t m=0; m<nsweep; m++) do_sweep();
+
                 em.sample(state.energy());
-                if (!ap.get<bool>("--ignore_ssf")) ssf.sample();
-                sm.sample(sc);
-                if (!ap.get<bool>("--ignore_tcm")) tcm.sample(params.beta);
+                mm.sample(sc);
+                // sample only coldest temperature for SSF
+                if (n == nsamp){
+                    ssf.new_T(T);
+                    tcm.new_T(T);
+                
+                    if (!ap.get<bool>("--ignore_ssf")) ssf.sample();
+                    if (!ap.get<bool>("--ignore_tcm")) tcm.sample(params.beta);
+                }
             }
 
             if (verbosity >= 1) {
@@ -329,7 +334,7 @@ int main (int argc, char *argv[]) {
             }
 
             if (verbosity >= 2) {
-                auto q2 = sm.curr_Q2();
+                auto q2 = mm.curr_Q2();
                 std::cout << "  Q2:";
                 for (int k = 0; k < 4; k++)
                     std::cout << "  " << Q2_labels[k] << "=" << std::setprecision(4) << q2[k];
@@ -354,9 +359,9 @@ int main (int argc, char *argv[]) {
         std::cout << "Done! Writing to file... " << std::endl;
 
         em.write_group(file_id, "/energy");
+        mm.write_group(file_id, "/monopole");
 
         if (!ap.get<bool>("--ignore_ssf")) ssf.write_group(file_id, "/ssf");
-        sm.write_group(file_id, "/monopole");
         if (!ap.get<bool>("--ignore_tcm")) tcm.write_group(file_id, "/transverse_corr");
 
 
@@ -404,10 +409,15 @@ int main (int argc, char *argv[]) {
         // Reset beta: the PT loop's betas[] vector takes over from here.
         params.beta = 1.0 / Thot;
 
+
         energy_manager em(n_replicas);
+        Q_manager mm;
         ssf_manager ssf(sc, pyrochlore::pyrochlore_local_axes(),
             n_replicas);
         transverse_corr_manager tcm(state, sc, n_replicas);
+        ssf.new_T(Tcold);
+        tcm.new_T(Tcold);
+        double coldest_beta = 1.0 / Tcold;
 
         std::vector<int64_t> swap_accepted(n_replicas - 1, 0);
         std::vector<int64_t> swap_attempted(n_replicas - 1, 0);
@@ -419,8 +429,9 @@ int main (int argc, char *argv[]) {
             // Advance all temperatures by one annealing step.
             for (int r = 0; r < n_replicas; r++){
                 betas[r] /= factor;
-                em.set_T(1.0 / betas[r]);   // register bin (no-op if already exists)
-                ssf.set_T(1.0 / betas[r]);   // register bin (no-op if already exists)
+                // register bin (no-op if already exists)
+                em.set_T(1.0 / betas[r]);   
+                mm.set_T(1.0 / betas[r]);
             }
 
             for (int j=0; j<n_replica_swaps; j++){
@@ -437,13 +448,16 @@ int main (int argc, char *argv[]) {
                     params.beta = betas[r];
                     for (size_t n = 0; n < nburn; n++) do_sweep();
                     em.set_T(1.0 / betas[r]);
-                    ssf.set_T(1.0 / betas[r]);
-                    tcm.set_T(1.0 / betas[r]);
+                    mm.set_T(1.0 / betas[r]);
+                    
                     for (size_t n = 0; n < nsamp; n++) {
                         for (size_t n = 0; n < nsweep; n++) do_sweep();
                         em.sample(state.energy());
-                        if (!ap.get<bool>("--ignore_ssf")) ssf.sample();
-                        if (!ap.get<bool>("--ignore_tcm")) tcm.sample(betas[r]);
+                        mm.sample(sc);
+                        if (std::abs(betas[r] - coldest_beta) < 1e-11){
+                            if (!ap.get<bool>("--ignore_ssf")) ssf.sample();
+                            if (!ap.get<bool>("--ignore_tcm")) tcm.sample(betas[r]);
+                        }
                     }
                     replicas[r] = save_state(state);
                 }
@@ -482,6 +496,7 @@ int main (int argc, char *argv[]) {
 
         // Write all temperature bins (sorted by T) into the "energy" group.
         em.write_group(file_id, "/energy");
+        mm.write_group(file_id, "/monopole");
         if (!ap.get<bool>("--ignore_ssf")) ssf.write_group(file_id, "/ssf");
         if (!ap.get<bool>("--ignore_tcm")) tcm.write_group(file_id, "/transverse_corr");
 

@@ -3,6 +3,7 @@
 #include "H5Gpublic.h"
 #include "H5Ipublic.h"
 #include "H5Ppublic.h"
+#include "abstract_manager.hpp"
 #include "quantum_cluster.hpp"
 #include <cstddef>
 #include <filesystem>
@@ -10,8 +11,7 @@
 
 
 // Measures the spinon texture at all MC temperatures
-class Q_manager {
-    std::vector<double> T_list;
+class Q_manager : public abstract_manager {
     std::vector<std::array<double, 4>> spinon2_expectation;
     std::vector<std::array<size_t, 4>> count;
     // spinon2_expectation[n] -> <Q^2> on tetras with 4-n sites
@@ -19,25 +19,24 @@ class Q_manager {
     // spinon2_expectation[1] -> triangles
     // spinon2_expectation[2] -> lines
     // spinon2_expectation[3] -> dangling spins
-    
 
-    public:
-    Q_manager(size_t n_reserve=0) {
-        T_list.reserve(n_reserve);
-        spinon2_expectation.reserve(n_reserve);   
-        
-    }
-
-    void new_T(double T){
-        T_list.push_back(T);
+    void on_new_temp() override {
         spinon2_expectation.push_back({0,0,0,0});
         count.push_back({0,0,0,0});
     }
 
+    public:
+    Q_manager(size_t n_reserve=0) {
+        T_list.reserve(n_reserve);
+        n_samples.reserve(n_reserve);
+        spinon2_expectation.reserve(n_reserve);
+        count.reserve(n_reserve);
+    }
+
     // TODO: should be const but Supercell has no const accessor
     void sample(QClattice& sc ){
-        auto& acc = spinon2_expectation.back();
-        auto& count_acc = count.back();
+        auto& acc = spinon2_expectation[curr_idx];
+        auto& count_acc = count[curr_idx];
         for (const auto& t : sc.get_objects<Tetra>()){
             if (t.neighbours.size() == 0) continue;
             double Q=0;
@@ -60,8 +59,8 @@ class Q_manager {
     // Mean Q^2 per defect type for the most recent temperature.
     // Returns {complete, triangle, line, dangling}; entry is NaN if no tetras of that type.
     std::array<double, 4> curr_Q2() const {
-        const auto& s = spinon2_expectation.back();
-        const auto& c = count.back();
+        const auto& s = spinon2_expectation[curr_idx];
+        const auto& c = count[curr_idx];
         std::array<double, 4> out;
         for (int i = 0; i < 4; i++)
             out[i] = c[i] ? s[i] / c[i] : std::numeric_limits<double>::quiet_NaN();
@@ -69,7 +68,7 @@ class Q_manager {
     }
 
     void save(const std::filesystem::path& file_path);
-    void write_group(hid_t file_id, const char* group_name="/charge");
+    void write_group(hid_t file_id, const char* group_name="/charge") override;
 };
 
 
