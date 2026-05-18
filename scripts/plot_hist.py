@@ -63,6 +63,8 @@ def main():
                         help=r"plots a legend ")
     parser.add_argument("--plot_colorbar", action='store_true',
                         help=r"plots a colorbar legend ")
+    parser.add_argument("--noprobdistf", action='store_true',
+                        help=r"Does not corrects for uneven bin width on log scale")
 
     args=parser.parse_args()
 
@@ -111,6 +113,14 @@ def main():
             ys = bc / (N * (1-p) * nsweep)
             ys_error = np.sqrt(v_bc / nsweep) / N / (1-p)
 
+
+
+        bin_w = rights - lefts
+        if not args.noprobdistf:
+            # correct for uneven bin width
+            ys /= bin_w
+            ys_error /= bin_w
+
         x = np.empty(lefts.size *3, dtype=lefts.dtype)
         err = np.zeros(lefts.size *3, dtype=lefts.dtype)
 
@@ -122,9 +132,12 @@ def main():
         ax.errorbar(x, np.repeat(ys,3), yerr=err, fmt='-',
                 color=color, lw=1, label=fr'${p*100:.0f}\%$')
 
-        percolmask = counts>500
+        thresh = N / 10
+        percolmask = sizes>thresh
         total_percolaing = np.sum(counts[percolmask]*sizes[percolmask])
-        print(f"p={p} average {100.0*total_percolaing/nsweep/N}% of spins in percolating cluster")
+        print(f"p={p}")
+        print(f"\taverage {100.0*total_percolaing/nsweep/N:.2f}% of spins in >10^{np.log10(thresh):.0f} clusters")
+        print(f"\tintegral of y-axis: {(ys * bin_w).sum()} ?= {(sizes*counts).sum() /N / nsweep}")
 
     if (args.title is not None):
         ax.set_title(args.title)
