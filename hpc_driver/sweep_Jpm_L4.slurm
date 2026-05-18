@@ -1,12 +1,12 @@
 #!/bin/bash
 
-#SBATCH -J jpm0_l8
+#SBATCH -J mc_sweep
 #SBATCH --nodes=1
 #! number of MPI tasks
 #SBATCH --ntasks=1
 #SBATCH --mail-user=alaric@zedat.fu-berlin.de   # Email to which notifications will be sent 
 #! How much wallclock time will be required?
-#SBATCH --time=8:00:00
+#SBATCH --time=3:00:00
 #SBATCH --cpus-per-task=1
 #SBATCH --mem-per-cpu=2000
 #! What types of email messages do you wish to receive?
@@ -49,20 +49,26 @@ echo "Current directory: `pwd`"
 #fi
 #
 
-L=8
-DILUTION=0.05
+L=4
+DILUTION=0.10
 Jzz=1.0
-Jxx=0.0
-Jyy=0.0
 N_DISORDER_REALISATIONS=8
-moves="CQBRM"
+moves="CQBRW
 
 mkdir -p $OUT_PATH
 
-ds=$(( $SLURM_ARRAY_TASK_ID % $N_DISORDER_REALISATIONS ))
+# disorder realisation number
+ds=$(( $SLURM_ARRAY_TASK_ID % $N_DISORDER_REALISATIONS + 100 ))
+# Monte Carlo seed
 ms=$(( $SLURM_ARRAY_TASK_ID / $N_DISORDER_REALISATIONS ))
 
-# disorder realisation
+for Jpm in -0.050 0.000 0.050; do
+
+Jxx=$Jpm
+Jyy=$Jpm
+
 CMD="$EXE_DIR/sq_pyrochlore $L $DILUTION -o $OUT_PATH --Thot 100 --Tcold 0.01 --Jzz $Jzz --Jxx $Jxx --Jyy $Jyy --nsweep 256 --nburn 16 -s $ds -m $ms --moves $moves --prefix run_$moves"
 echo "$CMD"
 $CMD
+
+done
