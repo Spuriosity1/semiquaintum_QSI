@@ -931,12 +931,14 @@ int try_flip_boundary_spin_MF_exact(MCSettings& mc, Spin* s) {
     struct ClusterUpdate {
         QClusterMF* qc;
         QClusterMF::BoundaryConfig new_config;
-        QClusterMF tmp;
+        Eigen::VectorXd new_evals;
+        Eigen::MatrixXd new_Sz;
     };
     std::vector<ClusterUpdate> updates;
     updates.reserve(6);
 
-    // Pass 1: build all speculative diagonalisations before computing dE.
+    // Pass 1: look up the speculative spectrum for each affected cluster from the
+    // precomputed cache.  Avoids copying the entire QClusterMF (H_base, Sz_expect, …).
     for (Spin* nb : s->neighbours) {
         QClusterMF* qc = static_cast<QClusterMF*>(nb->owning_cluster);
         if (!qc ||
@@ -950,9 +952,10 @@ int try_flip_boundary_spin_MF_exact(MCSettings& mc, Spin* s) {
         if (bidx < 0) continue;
 
         QClusterMF::BoundaryConfig new_config = qc->boundary_config ^ (1u << bidx);
-        QClusterMF tmp = *qc;
-        tmp.diagonalise(new_config);
-        updates.push_back({qc, new_config, std::move(tmp)});
+        Eigen::VectorXd new_evals;
+        Eigen::MatrixXd new_Sz;
+        qc->diagonalise_speculative(new_config, new_evals, new_Sz);
+        updates.push_back({qc, new_config, std::move(new_evals), std::move(new_Sz)});
     }
 
     // Pass 2: accumulate dE_quantum using updated <Sz> values for all touched clusters.
@@ -961,7 +964,7 @@ int try_flip_boundary_spin_MF_exact(MCSettings& mc, Spin* s) {
     // cross-term Jzz * (Sz_A_new * Sz_B_new - Sz_A_old * Sz_B_old).
     double dE_quantum = 0.0;
     for (const auto& u : updates) {
-        dE_quantum += u.tmp.eigenvalues[u.qc->eigenstate_idx] - u.qc->energy();
+        dE_quantum += u.new_evals[u.qc->eigenstate_idx] - u.qc->energy();
 
         for (const auto& b : u.qc->mf_bonds) {
             auto it = std::find_if(updates.begin(), updates.end(),
@@ -969,13 +972,13 @@ int try_flip_boundary_spin_MF_exact(MCSettings& mc, Spin* s) {
             if (it != updates.end()) {
                 if (b.other < u.qc) continue;  // count each inter-update pair once
                 dE_quantum += Jzz * (
-                    u.tmp.expect_Sz(u.qc->eigenstate_idx, b.my_site)
-                        * it->tmp.expect_Sz(b.other->eigenstate_idx, b.other_site)
+                    u.new_Sz(u.qc->eigenstate_idx, b.my_site)
+                        * it->new_Sz(b.other->eigenstate_idx, b.other_site)
                   - u.qc->expect_Sz(u.qc->eigenstate_idx, b.my_site)
                         * b.other->expect_Sz(b.other->eigenstate_idx, b.other_site));
             } else {
                 dE_quantum += Jzz * (
-                    u.tmp.expect_Sz(u.qc->eigenstate_idx, b.my_site)
+                    u.new_Sz(u.qc->eigenstate_idx, b.my_site)
                         * b.other->expect_Sz(b.other->eigenstate_idx, b.other_site)
                   - u.qc->expect_Sz(u.qc->eigenstate_idx, b.my_site)
                         * b.other->expect_Sz(b.other->eigenstate_idx, b.other_site));
@@ -987,7 +990,7 @@ int try_flip_boundary_spin_MF_exact(MCSettings& mc, Spin* s) {
     return muca_accept(mc, dE_total, 1.0, [&]{
         s->ising_val *= -1;
         for (auto& u : updates)
-            *u.qc = std::move(u.tmp);
+            u.qc->install(u.new_config, std::move(u.new_evals), std::move(u.new_Sz));
     });
 }
 

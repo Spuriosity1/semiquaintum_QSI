@@ -187,7 +187,7 @@ struct QClusterBase {
 
     protected:
 
-    Eigen::MatrixXd ham_with_classical_bcs(const std::vector<Spin*>& classical_spins, uint32_t classical_config);
+    Eigen::MatrixXd ham_with_classical_bcs(const std::vector<Spin*>& classical_spins, uint32_t classical_config) const;
 };
 
 // Exact cluster: clusters are independent.  Inter-cluster quantum bonds
@@ -215,6 +215,21 @@ struct QClusterMF : public QClusterBase {
 
     void initialise() override;
     void diagonalise(BoundaryConfig config) override;
+
+    // Read eigenvalues and Sz_expect for a given boundary config without modifying
+    // cluster state.  Used by try_flip_boundary_spin_MF_exact to avoid a full cluster
+    // copy.  Uses the precomputed cache if available; otherwise diagonalises locally.
+    void diagonalise_speculative(BoundaryConfig config,
+                                  Eigen::VectorXd& out_evals,
+                                  Eigen::MatrixXd& out_Sz) const;
+
+    // Install precomputed spectrum (from diagonalise_speculative) on accept.
+    void install(BoundaryConfig config, Eigen::VectorXd evals, Eigen::MatrixXd Sz) {
+        boundary_config = config;
+        eigenvalues     = std::move(evals);
+        Sz_expect       = std::move(Sz);
+    }
+
     void sync(){
         this->boundary_config=0;
         for (int i=0; i<(int)classical_boundary_spins.size(); i++){

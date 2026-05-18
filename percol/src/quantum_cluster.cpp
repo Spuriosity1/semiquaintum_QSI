@@ -148,6 +148,31 @@ void QClusterMF::initialise(){
     }
 }
 
+void QClusterMF::diagonalise_speculative(BoundaryConfig config,
+                                          Eigen::VectorXd& out_evals,
+                                          Eigen::MatrixXd& out_Sz) const {
+    if (eval_cache) {
+        out_evals = (*eval_cache)[config];
+        out_Sz    = (*sz_cache)[config];
+        return;
+    }
+    auto H = ham_with_classical_bcs(classical_boundary_spins, config);
+    Eigen::SelfAdjointEigenSolver<Eigen::MatrixXd> solver(H);
+    out_evals = solver.eigenvalues();
+    const auto& psi = solver.eigenvectors();
+    out_Sz.resize(out_evals.size(), (int)spins.size());
+    for (int site_i = 0; site_i < (int)spins.size(); site_i++) {
+        for (int n = 0; n < (int)out_evals.size(); n++) {
+            double val = 0;
+            for (int b = 0; b < hilbert_dim(); b++) {
+                double zi = ((b >> site_i) & 1) ? +1.0 : -1.0;
+                val += psi(b, n) * psi(b, n) * zi;
+            }
+            out_Sz(n, site_i) = val;
+        }
+    }
+}
+
 // Add the diagonal boundary-spin coupling to a copy of H_base and return it.
 //
 // For each classical boundary spin i with value sigma_i = ±1 (from classical_config),
@@ -156,7 +181,7 @@ void QClusterMF::initialise(){
 //
 // Jzz is read from ModelParams at call time (not frozen like Jxx/Jyy).
 // This is the only term that changes when a boundary spin flips.
-inline Eigen::MatrixXd QClusterBase::ham_with_classical_bcs(const std::vector<Spin*>& classical_spins, uint32_t classical_config){
+inline Eigen::MatrixXd QClusterBase::ham_with_classical_bcs(const std::vector<Spin*>& classical_spins, uint32_t classical_config) const {
 
     Eigen::MatrixXd H = H_base; // copy, then add boundary terms
     double Jzz = ModelParams::get().Jzz;
