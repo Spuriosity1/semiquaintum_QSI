@@ -25,6 +25,14 @@ from collections import defaultdict
 #   Disorder-average file (_mergeK.davg.h5) — intensive quantities normalised by <n_spins>:
 #     T_list, E, E_sq, var, var_sq, n_disorder
 
+def check_file(fname):
+    try:
+        with h5py.File(fname, "r") as f:
+            pass
+    except OSError as e:
+        print(f'Problem with file "{fname}": {e}')
+        return False
+    return True
 
 def load_raw(fname):
     """Return T_list, E_sum, E2_sum, n_samples (raw MC sums, not divided by n)."""
@@ -139,6 +147,9 @@ def main(fnames):
     disorder_n_spins = [] # n spins per disorder seed
 
     for ds, files in sorted(groups.items()):
+
+        if (not check_file(files[0])):
+            sys.exit(1)
         T_this, E_sum, E2_j, n_sum = load_raw(files[0])
         if T_ref is None:
             T_ref = T_this
@@ -160,6 +171,9 @@ def main(fnames):
         var_sq_sum = var_j**2
 
         for fname in files[1:]:
+            if (not check_file(fname)):
+                continue
+
             n_spins = load_n_spins(fname)
 
             T, E_j, E2_j, n_j = load_raw(fname)

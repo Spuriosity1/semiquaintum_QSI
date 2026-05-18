@@ -1,20 +1,20 @@
 #!/bin/bash
 
-#SBATCH -J jpm0_l8
+#SBATCH -J bmark
 #SBATCH --nodes=1
 #! number of MPI tasks
 #SBATCH --ntasks=1
 #SBATCH --mail-user=alaric@zedat.fu-berlin.de   # Email to which notifications will be sent 
 #! How much wallclock time will be required?
-#SBATCH --time=8:00:00
+#SBATCH --time=2:00:00
 #SBATCH --cpus-per-task=1
 #SBATCH --mem-per-cpu=2000
 #! What types of email messages do you wish to receive?
 #SBATCH --mail-type=END
-#SBATCH --output=hpc_driver/track/c_sweep.%A_%a.out
-#SBATCH --error=hpc_driver/track/c_sweep.%A_%a.error
+#SBATCH --output=hpc_driver/track/%x.%A_%a.out
+#SBATCH --error=hpc_driver/track/%x.%A_%a.error
 #SBATCH --chdir=/scratch/alaric/semiquaintum_QSI
-#SBATCH --array=0-1024
+#SBATCH --array=0-127
 ##SBATCH --constraint='uarch:x86-64-v3|uarch:x86-64-v4'
 
 . /etc/profile.d/modules.sh                # Leave this line (enables the module command)
@@ -32,7 +32,7 @@ echo -e "Working in `pwd`.\n"
 JOBID=$SLURM_JOB_ID
 TASKID=$SLURM_ARRAY_TASK_ID
 
-OUT_PATH="../out/sq_qsi"
+OUT_PATH="../tmp/bmark"
 EXE_DIR="build/percol/"
 
 echo -e "TaskID: $TASKID\n======"
@@ -49,20 +49,19 @@ echo "Current directory: `pwd`"
 #fi
 #
 
-L=8
-DILUTION=0.05
 Jzz=1.0
-Jxx=0.0
-Jyy=0.0
-N_DISORDER_REALISATIONS=8
-moves="CQBRM"
+Jxx=0.05
+Jyy=0.05
 
 mkdir -p $OUT_PATH
 
-ds=$(( $SLURM_ARRAY_TASK_ID % $N_DISORDER_REALISATIONS ))
-ms=$(( $SLURM_ARRAY_TASK_ID / $N_DISORDER_REALISATIONS ))
+ds=0
+ms=$(( $SLURM_ARRAY_TASK_ID + 400 ))
+moves="CQBRW"
+L=$(( 2 * ( $SLURM_ARRAY_TASK_ID % 3 + 1)  ))
 
-# disorder realisation
-CMD="$EXE_DIR/sq_pyrochlore $L $DILUTION -o $OUT_PATH --Thot 100 --Tcold 0.01 --Jzz $Jzz --Jxx $Jxx --Jyy $Jyy --nsweep 256 --nburn 16 -s $ds -m $ms --moves $moves --prefix run_$moves"
-echo "$CMD"
-$CMD
+for p in 0 0.01 0.05 0.1; do
+    CMD="$EXE_DIR/sq_pyrochlore --moves $moves $L $p -o $OUT_PATH --Thot 100 --Tcold 0.001 --Jzz $Jzz --Jxx $Jxx --Jyy $Jyy --nsweep 16 --nburn 512 -s $ds -m $ms --n_replicas 100 --n_replica_swaps 16 --prefix bm_r"
+    echo "$CMD"
+    time $CMD
+done

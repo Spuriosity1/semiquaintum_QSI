@@ -1,20 +1,20 @@
 #!/bin/bash
 
-#SBATCH -J jpm0_l8
+#SBATCH -J TEST_sqL8p0.10
 #SBATCH --nodes=1
 #! number of MPI tasks
 #SBATCH --ntasks=1
 #SBATCH --mail-user=alaric@zedat.fu-berlin.de   # Email to which notifications will be sent 
 #! How much wallclock time will be required?
-#SBATCH --time=8:00:00
+#SBATCH --time=18:00:00
 #SBATCH --cpus-per-task=1
 #SBATCH --mem-per-cpu=2000
 #! What types of email messages do you wish to receive?
 #SBATCH --mail-type=END
-#SBATCH --output=hpc_driver/track/c_sweep.%A_%a.out
-#SBATCH --error=hpc_driver/track/c_sweep.%A_%a.error
+#SBATCH --output=hpc_driver/track/%x.%A_%a.out
+#SBATCH --error=hpc_driver/track/%x.%A_%a.error
 #SBATCH --chdir=/scratch/alaric/semiquaintum_QSI
-#SBATCH --array=0-1024
+#SBATCH --array=0-3
 ##SBATCH --constraint='uarch:x86-64-v3|uarch:x86-64-v4'
 
 . /etc/profile.d/modules.sh                # Leave this line (enables the module command)
@@ -52,17 +52,24 @@ echo "Current directory: `pwd`"
 L=8
 DILUTION=0.05
 Jzz=1.0
-Jxx=0.0
-Jyy=0.0
 N_DISORDER_REALISATIONS=8
-moves="CQBRM"
+moves="CQBRW
+sweep=1024
 
 mkdir -p $OUT_PATH
 
-ds=$(( $SLURM_ARRAY_TASK_ID % $N_DISORDER_REALISATIONS ))
-ms=$(( $SLURM_ARRAY_TASK_ID / $N_DISORDER_REALISATIONS ))
+# disorder realisation number
+ds=$(( $SLURM_ARRAY_TASK_ID % $N_DISORDER_REALISATIONS + 100 ))
+# Monte Carlo seed
+ms=$(( $SLURM_ARRAY_TASK_ID / $N_DISORDER_REALISATIONS + 1650 ))
 
-# disorder realisation
-CMD="$EXE_DIR/sq_pyrochlore $L $DILUTION -o $OUT_PATH --Thot 100 --Tcold 0.01 --Jzz $Jzz --Jxx $Jxx --Jyy $Jyy --nsweep 256 --nburn 16 -s $ds -m $ms --moves $moves --prefix run_$moves"
+for Jpm in -0.050 0.000 0.050 0.100 0.200; do
+
+Jxx=$Jpm
+Jyy=$Jpm
+
+CMD="$EXE_DIR/sq_pyrochlore $L $DILUTION -o $OUT_PATH --Thot 100 --Tcold 0.01 --Jzz $Jzz --Jxx $Jxx --Jyy $Jyy --nsweep $sweep --nburn 16 -s $ds -m $ms --moves $moves --prefix run_${moves}_sw${sweep}"
 echo "$CMD"
 $CMD
+
+done
