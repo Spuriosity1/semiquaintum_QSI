@@ -1,6 +1,6 @@
 #!/bin/bash
 
-#SBATCH -J swconverge
+#SBATCH -J TEST_nsw
 #SBATCH --nodes=1
 #! number of MPI tasks
 #SBATCH --ntasks=1
@@ -14,7 +14,7 @@
 #SBATCH --output=hpc_driver/track/c_sweep.%A_%a.out
 #SBATCH --error=hpc_driver/track/c_sweep.%A_%a.error
 #SBATCH --chdir=/scratch/alaric/semiquaintum_QSI
-#SBATCH --array=0-1024
+#SBATCH --array=0-24
 ##SBATCH --constraint='uarch:x86-64-v3|uarch:x86-64-v4'
 
 . /etc/profile.d/modules.sh                # Leave this line (enables the module command)
@@ -32,7 +32,7 @@ echo -e "Working in `pwd`.\n"
 JOBID=$SLURM_JOB_ID
 TASKID=$SLURM_ARRAY_TASK_ID
 
-OUT_PATH="../out/sq_qsi"
+OUT_PATH="../out/sq_qsi/bench"
 EXE_DIR="build/percol/"
 
 echo -e "TaskID: $TASKID\n======"
@@ -49,30 +49,36 @@ echo "Current directory: `pwd`"
 #fi
 #
 
-L=8
+L=4
 DILUTION=0.05
 Jzz=1.0
-N_DISORDER_REALISATIONS=8
+N_DISORDER_REALISATIONS=1
 moves="CQBRW"
-sweep=128
-n_replicas=20
+# sweep=128
+n_replicas=100
 replica_swaps=20
 
 mkdir -p $OUT_PATH
 
 # disorder realisation number
-ds=$(( $SLURM_ARRAY_TASK_ID % $N_DISORDER_REALISATIONS + 100 ))
+ds=0
 # Monte Carlo seed
-ms=$(( $SLURM_ARRAY_TASK_ID / $N_DISORDER_REALISATIONS + 1650 ))
+ms=0
 
 Jpm=0.05
 
 Jxx=$Jpm
 Jyy=$Jpm
 
-for burn in 16 32 64 128 256; do
+burnvals=(16 32 64 128 256)
+sweepvals=(16 32 64 128 256)
+
+burn_id=$(( $SLURM_ARRAY_TASK_ID % 5 ))
+sweep_id=$(( $SLURM_ARRAY_TASK_ID / 5 ))
+
+burn=${burnvals[${burn_id}]}
+sweep=${sweepvals[${sweep_id}]}
+
 CMD="$EXE_DIR/sq_pyrochlore $L $DILUTION -o $OUT_PATH --Thot 100 --Tcold 0.01 --Jzz $Jzz --Jxx $Jxx --Jyy $Jyy --nsweep $sweep --nburn ${burn} -s $ds -m $ms --moves $moves --prefix bm_r${n_replicas}_rs${replica_swaps}_${moves}_sw${sweep}_burn${burn} --n_replicas ${n_replicas} --n_replica_swaps ${replica_swaps} --ignore_ssf"
 echo "$CMD"
 $CMD
-
-done
