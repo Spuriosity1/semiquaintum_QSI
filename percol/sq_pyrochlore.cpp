@@ -450,13 +450,16 @@ int main (int argc, char *argv[]) {
                     em.set_T(1.0 / betas[r]);
                     mm.set_T(1.0 / betas[r]);
                     
-                    for (size_t n = 0; n < nsamp; n++) {
-                        for (size_t n = 0; n < nsweep; n++) do_sweep();
-                        em.sample(state.energy());
-                        mm.sample(sc);
-                        if (std::abs(betas[r] - coldest_beta) < 1e-11){
-                            if (!ap.get<bool>("--ignore_ssf")) ssf.sample();
-                            if (!ap.get<bool>("--ignore_tcm")) tcm.sample(betas[r]);
+                    // sample only the last replica swap round
+                    if (j == n_replica_swaps -1){
+                        for (size_t n = 0; n < nsamp; n++) {
+                            for (size_t n = 0; n < nsweep; n++) do_sweep();
+                            em.sample(state.energy());
+                            mm.sample(sc);
+                            if (std::abs(betas[r] - coldest_beta) < 1e-11){
+                                if (!ap.get<bool>("--ignore_ssf")) ssf.sample();
+                                if (!ap.get<bool>("--ignore_tcm")) tcm.sample(betas[r]);
+                            }
                         }
                     }
                     replicas[r] = save_state(state);
