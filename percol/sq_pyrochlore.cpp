@@ -204,7 +204,7 @@ int main (int argc, char *argv[]) {
 
     double Thot = ap.get<double>("--Thot");
     double Tcold = ap.get<double>("--Tcold");
-    size_t n_step = ap.get<size_t>("--nstep");
+    size_t nstep = ap.get<size_t>("--nstep");
 
     ModelParams::get().Jzz = ap.get<double>("--Jzz");
     ModelParams::get().Jxx = ap.get<double>("--Jxx");
@@ -325,10 +325,10 @@ int main (int argc, char *argv[]) {
         energy_manager em;
         Q_manager mm;
         ssf_manager ssf(sc, pyrochlore::pyrochlore_local_axes());
-        transverse_corr_manager tcm(state, sc, n_step);
-        double factor = exp( log(Tcold/Thot) / n_step );
+        transverse_corr_manager tcm(state, sc, nstep);
+        double factor = exp( log(Tcold/Thot) / nstep );
 
-        for (size_t i=0; i<n_step; i++){
+        for (size_t step_i=1; step_i<=nstep; step_i++){
             params.beta /= factor;
             const double T = 1./params.beta;
             em.new_T(T);
@@ -336,15 +336,15 @@ int main (int argc, char *argv[]) {
 
             for (size_t n=0; n<nburn; n++) do_sweep();
 
-            for (size_t n=1; n<=nsamp; n++){
+            for (size_t n=0; n<nsamp; n++){
                 for (size_t m=0; m<nsweep; m++) do_sweep();
 
                 em.sample(state.energy());
                 mm.sample(sc);
                 // sample only coldest temperature for SSF
-                if (n == nsamp){
-                    ssf.new_T(T);
-                    tcm.new_T(T);
+                if (step_i == nstep){
+                    ssf.set_T(T);
+                    tcm.set_T(T);
                 
                     if (!ap.get<bool>("--ignore_ssf")) ssf.sample();
                     if (!ap.get<bool>("--ignore_tcm")) tcm.sample(params.beta);
@@ -357,7 +357,7 @@ int main (int argc, char *argv[]) {
                 if (!state.clusters.empty())        params.accepted_quantum    /= state.clusters.size();
                 if (!state.boundary_spins.empty())  params.accepted_boundary   /= state.boundary_spins.size();
 
-                std::cout << "Step "<<i+1<<std::setprecision(6) << " T = " << T
+                std::cout << "Step "<<step_i+1<<std::setprecision(6) << " T = " << T
                           << "\tE = " << em.curr_E()
                           << "\t" << params.acceptance() <<"\n";
             }
@@ -412,8 +412,8 @@ int main (int argc, char *argv[]) {
 
         // Cooling factor — same per-step rate as the standard annealing branch.
         // After n_step/n_replicas steps each replica cools by (Tcold/Thot)^{1/n_replicas}.
-        const double factor = std::exp(std::log(Tcold / Thot) / n_step);
-        const size_t steps_per_replica = n_step / n_replicas;
+        const double factor = std::exp(std::log(Tcold / Thot) / nstep);
+        const size_t steps_per_replica = nstep / n_replicas;
 
         // Stage 1: pre-anneal from T_hot, capturing a snapshot at each replica's
         // starting temperature T_r(0) = Thot * (Tcold/Thot)^{r/n_replicas}.
