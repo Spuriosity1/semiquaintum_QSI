@@ -426,7 +426,13 @@ int try_flip_worm(MCSettings& mc, Spin* root) {
             double d = std::abs(qc->eigenvalues[n] - E_old);
             if (d < best_dist) { best_dist = d; best_idx = n; }
         }
-        assert(best_dist<ENERGY_TOL);
+        if (best_dist >= ENERGY_TOL) {
+            // Worm boundary flips don't cancel for this cluster (e.g. after a
+            // boundary-string move changed this cluster's boundary_config). Rollback.
+            for (auto s : path) s->ising_val *= -1;
+            for (auto& snap : snaps) { snap.qc->sync(); snap.qc->eigenstate_idx = snap.idx; }
+            return 0;
+        }
         qc->eigenstate_idx = best_idx;
     }
 
@@ -681,6 +687,218 @@ int try_flip_monopole_worm(MCSettings& mc, Tetra*tail_tetra, double target_lengt
     }
 
     return 1;
+}
+
+
+// Move 1d: boundary-string worm.
+//
+// Flips a path of spins connecting two boundary spins (s_start at the tail,
+// s_end at the head).  Interior steps follow the ice-rule heal_val alternation
+// (same as try_flip_monopole_worm), so intermediate classical tetras keep Q=0.
+// The two endpoint boundary spins change the boundary_config of their adjacent
+// quantum clusters; every touched cluster is re-diagonalised once (speculative,
+// non-destructive) with all flipped bits applied simultaneously.
+//
+// This move is specifically designed to free monopoles that are stuck in Dirac
+// strings between different defect tetrahedra: the existing monopole worm
+// backtracks when head_tetra contains quantum spins, whereas this worm
+// explicitly terminates at boundary spins and pays the cluster energy cost.
+//
+// Detailed balance: Hastings = n_start_candidates / n_end_candidates; interior
+// step ratios cancel because ice-rule tetras always present exactly one spin with
+// the right heal_val on the forward and reverse paths.
+int try_flip_boundary_string(MCSettings& mc, Spin* s_start) {
+    if (s_start->deleted || s_start->is_quantum()) return 0;
+
+    // s_start must be a boundary spin (adjacent to at least one quantum spin).
+    bool start_is_boundary = false;
+    for (Spin* nb : s_start->neighbours)
+        if (!nb->deleted && nb->is_quantum()) { start_is_boundary = true; break; }
+    if (!start_is_boundary) return 0;
+
+    // Find the classical-side (outer) tetrahedron: the one with no quantum members.
+    Tetra* t_outer_start = nullptr;
+    for (Tetra* t : s_start->owning_tetras) {
+        if (!t) continue;
+        bool has_quantum = false;
+        for (Spin* m : t->member_spins)
+            if (m->is_quantum()) { has_quantum = true; break; }
+        if (!has_quantum) { t_outer_start = t; break; }
+    }
+    if (!t_outer_start) return 0;  // boundary spin with both sides quantum
+
+    const int root_val = s_start->ising_val;
+    s_start->ising_val *= -1;
+
+    // heal_val: the ising_val a candidate must have to heal the monopole at head_tetra.
+    int heal_val = -root_val;
+
+    // Count forward candidates for Hastings (before any further flips).
+    int n_start_candidates = 0;
+    for (Spin* s : t_outer_start->member_spins) {
+        if (s == s_start || s->deleted || s->is_quantum()) continue;
+        if (s->ising_val == heal_val) ++n_start_candidates;
+    }
+    if (n_start_candidates == 0) { s_start->ising_val *= -1; return 0; }
+
+    std::vector<Spin*> path = {s_start};
+    Tetra* head_tetra = t_outer_start;
+    Spin* prev_spin   = s_start;
+
+    while ((int)path.size() <= (int)mc.max_worm_steps) {
+        std::vector<Spin*> candidates;
+        for (Spin* s : head_tetra->member_spins) {
+            if (s == prev_spin || s->deleted || s->is_quantum()) continue;
+            if (s->ising_val == heal_val) candidates.push_back(s);
+        }
+        if (candidates.empty()) {
+            for (Spin* s : path) s->ising_val *= -1;
+            return 0;
+        }
+
+        Spin* next = candidates[
+            std::uniform_int_distribution<int>(0, (int)candidates.size() - 1)(mc.rng)];
+
+        next->ising_val *= -1;
+        path.push_back(next);
+        heal_val = -heal_val;
+
+        // Detect boundary spin: adjacent to at least one quantum spin.
+        bool next_is_boundary = false;
+        for (Spin* nb : next->neighbours)
+            if (!nb->deleted && nb->is_quantum()) { next_is_boundary = true; break; }
+
+        if (next_is_boundary) break;  // s_end found; head_tetra stays as the pick tetra
+
+        Tetra* next_head = (next->owning_tetras[0] == head_tetra)
+                            ? next->owning_tetras[1]
+                            : next->owning_tetras[0];
+        if (!next_head) {
+            for (Spin* s : path) s->ising_val *= -1;
+            return 0;
+        }
+        prev_spin  = next;
+        head_tetra = next_head;
+    }
+
+    // Require path to end at a boundary spin.
+    if (path.size() < 2) { for (Spin* s : path) s->ising_val *= -1; return 0; }
+    Spin* s_end = path.back();
+    {
+        bool end_is_boundary = false;
+        for (Spin* nb : s_end->neighbours)
+            if (!nb->deleted && nb->is_quantum()) { end_is_boundary = true; break; }
+        if (!end_is_boundary) { for (Spin* s : path) s->ising_val *= -1; return 0; }
+    }
+
+    // --- Classical ΔE ---
+    // Only bonds between path spins and non-path, non-quantum, non-deleted neighbours
+    // contribute: path-path bonds cancel (both flipped), interior ice-rule bonds net zero.
+    // All path spins are already in proposed state (σ_new = −σ_old), so
+    // ΔE_bond(path_spin, non_path_nb) = 2·Jzz·σ_new·σ_nb.
+    const double Jzz = ModelParams::get().Jzz;
+    std::unordered_set<const Spin*> path_set(path.begin(), path.end());
+    double dE_classical = 0.0;
+    for (const Spin* s : path) {
+        for (const Spin* nb : s->neighbours) {
+            if (nb->deleted || nb->is_quantum() || path_set.count(nb)) continue;
+            dE_classical += 2.0 * Jzz * s->ising_val * nb->ising_val;
+        }
+    }
+
+    // --- Quantum ΔE ---
+    // Collect touched clusters.  For each boundary spin on the path, XOR its bit
+    // into the cluster's new_config (handles two flips of the same cluster in one shot).
+    struct ClusterUpdate {
+        QClusterMF*              qc;
+        QClusterMF::BoundaryConfig new_config;
+        Eigen::VectorXd          new_evals;
+        Eigen::MatrixXd          new_Sz;
+    };
+    std::vector<ClusterUpdate> updates;
+
+    for (Spin* s : path) {
+        for (Spin* nb : s->neighbours) {
+            QClusterMF* qc = static_cast<QClusterMF*>(nb->owning_cluster);
+            if (!qc) continue;
+
+            int bidx = -1;
+            for (int i = 0; i < (int)qc->classical_boundary_spins.size(); i++)
+                if (qc->classical_boundary_spins[i] == s) { bidx = i; break; }
+            if (bidx < 0) continue;
+
+            auto it = std::find_if(updates.begin(), updates.end(),
+                                   [&](const ClusterUpdate& u){ return u.qc == qc; });
+            if (it == updates.end())
+                updates.push_back({qc, qc->boundary_config ^ (1u << bidx), {}, {}});
+            else
+                it->new_config ^= (1u << bidx);
+        }
+    }
+
+    for (auto& u : updates)
+        u.qc->diagonalise_speculative(u.new_config, u.new_evals, u.new_Sz);
+
+    // Eigenvalue shift + inter-cluster MF bond changes (mirrors try_flip_boundary_spin_MF_exact).
+    double dE_quantum = 0.0;
+    for (const auto& u : updates) {
+        dE_quantum += u.new_evals[u.qc->eigenstate_idx] - u.qc->energy();
+        for (const auto& b : u.qc->mf_bonds) {
+            auto it = std::find_if(updates.begin(), updates.end(),
+                                   [&](const ClusterUpdate& v){ return v.qc == b.other; });
+            if (it != updates.end()) {
+                if (b.other < u.qc) continue;  // count each inter-update pair once
+                dE_quantum += Jzz * (
+                    u.new_Sz(u.qc->eigenstate_idx, b.my_site)
+                        * it->new_Sz(b.other->eigenstate_idx, b.other_site)
+                  - u.qc->expect_Sz(u.qc->eigenstate_idx, b.my_site)
+                        * b.other->expect_Sz(b.other->eigenstate_idx, b.other_site));
+            } else {
+                dE_quantum += Jzz * (
+                    u.new_Sz(u.qc->eigenstate_idx, b.my_site)
+                        * b.other->expect_Sz(b.other->eigenstate_idx, b.other_site)
+                  - u.qc->expect_Sz(u.qc->eigenstate_idx, b.my_site)
+                        * b.other->expect_Sz(b.other->eigenstate_idx, b.other_site));
+            }
+        }
+    }
+
+    // --- Hastings correction ---
+    // head_tetra is s_end's outer (classical-side) tetrahedron; reverse heal_val
+    // cancels the monopole the reverse worm would create by flipping s_end.
+    const int reverse_heal_val = -s_end->ising_val;  // proposed ising_val = -(old), so -proposed = old heal_val
+    int n_end_candidates = 0;
+    for (Spin* s : head_tetra->member_spins) {
+        if (s == s_end || s->deleted || s->is_quantum()) continue;
+        if (s->ising_val == reverse_heal_val) ++n_end_candidates;
+    }
+    if (n_end_candidates == 0) { for (Spin* s : path) s->ising_val *= -1; return 0; }
+
+    const double hastings = (double)n_start_candidates / (double)n_end_candidates;
+    const double dE_total = dE_classical + dE_quantum;
+
+    // Metropolis-Hastings (with MUCA support).
+    double E_new = mc.muca ? mc.muca->E_current + dE_total : 0.0;
+    double log_acc;
+    if (mc.muca == nullptr) {
+        log_acc = -mc.beta * dE_total + std::log(hastings);
+    } else {
+        int k_old = mc.muca->energy_bin(mc.muca->E_current);
+        int k_new = mc.muca->energy_bin(E_new);
+        if (k_old < 0 || k_new < 0) { for (Spin* s : path) s->ising_val *= -1; return 0; }
+        log_acc = mc.muca->lnG[k_old] - mc.muca->lnG[k_new] + std::log(hastings);
+    }
+
+    if (mc.uniform(mc.rng) < std::exp(log_acc)) {
+        if (mc.muca) mc.muca->E_current = E_new;
+        for (auto& u : updates)
+            u.qc->install(u.new_config, std::move(u.new_evals), std::move(u.new_Sz));
+        return 1;
+    }
+
+    // Reject: roll back all spin flips (cluster state was never modified).
+    for (Spin* s : path) s->ising_val *= -1;
+    return 0;
 }
 
 
@@ -1155,6 +1373,13 @@ void MCStateMF::sweep(MCSettings& mc_) {
     if (mc_.moves & MOVE_QUANTUM) {
         for (auto& qc : clusters)
             mc_.accepted_quantum += try_flip_cluster_state_MF(mc_, qc);
+    }
+    if ((mc_.moves & MOVE_BSTRING) && !boundary_spins.empty()) {
+        auto s = boundary_spins[
+            std::uniform_int_distribution<int>(0, (int)boundary_spins.size()-1)(mc_.rng)
+        ];
+        mc_.attempted_bstring++;
+        mc_.accepted_bstring += try_flip_boundary_string(mc_, s);
     }
 }
 

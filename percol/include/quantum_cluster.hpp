@@ -17,6 +17,7 @@ struct ModelParams {
     double Jxx = 0.5;
     double Jyy = 0.5;
 //    double h = 0;
+    int verbosity = 0;
 
     static ModelParams& get() {
         static ModelParams instance;
@@ -114,7 +115,7 @@ inline bool ends_can_fluctuate(const Spin* a, const Spin* b){
 struct QClusterBase {
     using BoundaryConfig = uint32_t; // bitmask over boundary spins; bit i set ↔ classical_boundary_spins[i] == +1
 
-    static constexpr int MAX_CACHED_BOUNDARY = 12; // cache if 2^k <= 4096 configs
+    static constexpr int MAX_CACHED_BOUNDARY = 10; // cache if 2^k <= 4096 configs
     // Cache eigenvectors only if D^2 * n_configs <= this (≈8 MB per cluster).
     // For N=6/k=8: 64^2 * 256 = 1 M elements ✓.  N=8/k=4: 256^2 * 16 = 1 M ✓.
     static constexpr long long MAX_EVEC_CACHED_ELEMENTS = 1LL << 20;

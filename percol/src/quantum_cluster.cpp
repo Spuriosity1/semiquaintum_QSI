@@ -93,6 +93,25 @@ void QCluster::initialise(){
 // of cross-cluster quantum bonds that will be handled via mean field.
 void QClusterMF::initialise(){
     this->QClusterBase::initialise();
+
+    if (ModelParams::get().verbosity >= 5) {
+        const int D = hilbert_dim();
+        const int k = (int)classical_boundary_spins.size();
+        const int N = n_spins();
+        long long bytes = (long long)D * D * 8; // H_base
+        if (k <= MAX_CACHED_BOUNDARY) {
+            const int n_cfg = 1 << k;
+            const long long evec_elems = (long long)D * D * n_cfg;
+            bytes += (long long)n_cfg * D * 8;         // eval_cache
+            bytes += (long long)n_cfg * D * N * 8;     // sz_cache
+            if (evec_elems <= MAX_EVEC_CACHED_ELEMENTS)
+                bytes += evec_elems * 8;               // evec_cache
+        }
+        std::cout << "  [QClusterMF] N=" << N << " k=" << k
+                  << " D=" << D << "  est. mem "
+                  << bytes / (1024.0 * 1024.0) << " MB\n";
+    }
+
     build_matrix_rep();
 
     if ((int)classical_boundary_spins.size() <= MAX_CACHED_BOUNDARY) {

@@ -236,24 +236,53 @@ int main (int argc, char *argv[]) {
     std::mt19937 rng(hashf(dseed));
     params.rng.seed(hashf(mseed ^ (dseed * 105 ) ) );
     std::unordered_set<Tetra*> seed_tetras;
-    // Identify the quantum-cluster distribution
-    MCStateMF state;
 
     delete_spins(rng, sc, p, seed_tetras);
+
+
+    // Identify the quantum-cluster distribution
+    MCStateMF state;
     if (!classical_only)
         identify_1o_clusters(seed_tetras, state.clusters);
     identify_flippable_hexas(sc, state.intact_plaqs);
 
+    if (verbosity >= 1) {
+        output_cluster_dist(std::cout, state.clusters, 1);
+    }
+
+    ModelParams::get().verbosity = verbosity;
     for (auto& qc : state.clusters) qc.initialise();
+
+    if (verbosity >= 3){
+        long long bytes_H = 0;
+        long long bytes_cache = 0;
+        for (const auto& qc : state.clusters){
+            const int D = qc.hilbert_dim();
+            const int k = (int)qc.classical_boundary_spins.size();
+            const int N = qc.n_spins();
+            bytes_H += D*D*8;
+
+            if (k <= qc.MAX_CACHED_BOUNDARY) {
+                const int n_cfg = 1 << k;
+                const long long evec_elems = (long long)D * D * n_cfg;
+                bytes_cache += (long long)n_cfg * D * 8;         // eval_cache
+                bytes_cache += (long long)n_cfg * D * N * 8;     // sz_cache
+                if (evec_elems <= qc.MAX_EVEC_CACHED_ELEMENTS)
+                    bytes_cache += evec_elems * 8;               // evec_cache
+            }
+        }
+        std::cout<<"\n================\n"<<
+                  "Cluster Hamiltonians mem="<< bytes_H / (1024.0 * 1024.0) << " MB\n" <<
+                  "Cluster Caches mem="<< bytes_cache / (1024.0 * 1024.0) << " MB\n";
+    }
 
     // Partitions spins into boundary, cluster and neighbour
     state.partition_spins(sc.get_objects<Spin>());
 
     if (verbosity >= 1) {
-        output_cluster_dist(std::cout, state.clusters, 1);
-
         int exp_Jzz_bonds = calc_GS_energy(sc.get_objects<Tetra>());
-        std::cout << "Expected ground state energy: " << exp_Jzz_bonds << "Jzz = "
+        std::cout << "\n==========================\n"
+                  << "Expected ground state energy: " << exp_Jzz_bonds << "Jzz = "
                   << exp_Jzz_bonds * ModelParams::get().Jzz << "\n";
 
         std::cout << "\n==========================\n"
