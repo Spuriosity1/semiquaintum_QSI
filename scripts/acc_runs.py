@@ -273,11 +273,15 @@ def main(fnames):
     for fname in fnames:
         groups[parse_dseed(fname)].append(fname)
 
-    disorder_E           = []
-    disorder_var         = []
-    disorder_n_spins     = []
-    disorder_corr_ssf    = []   # per-seed mean SSF correlator (n_T, n_sl, n_sl, n_k, 2)
-    disorder_ssf_n_spins = []   # n_spins attribute from /ssf per disorder seed
+    disorder_E              = []
+    disorder_var            = []
+    disorder_n_spins        = []
+    disorder_corr_ssf       = []   # per-seed mean SSF correlator (n_T, n_sl, n_sl, n_k, 2)
+    disorder_ssf_n_spins    = []   # n_spins attribute from /ssf per disorder seed
+    disorder_tcm_corr_mean  = []   # per-seed mean TCM correlator (n_T, n_disp_ds)
+    disorder_tcm_disp       = []   # per-seed displacement vectors (n_disp_ds, 3)
+    disorder_tcm_pairs      = []   # per-seed n_pairs_per_sample (n_disp_ds,)
+    disorder_tcm_nqsp       = []   # per-seed n_quantum_spins
 
     for ds, files in sorted(groups.items()):
         if not check_file(files[0]):
@@ -380,6 +384,13 @@ def main(fnames):
             disorder_corr_ssf.append(mean_corr)
             disorder_ssf_n_spins.append(ssf_n_spins)
 
+        if merged_tcm_corr is not None:
+            mean_corr = merged_tcm_corr / merged_tcm_n[:, None]
+            disorder_tcm_corr_mean.append(mean_corr)
+            disorder_tcm_disp.append(tcm_disp)
+            disorder_tcm_pairs.append(tcm_pairs)
+            disorder_tcm_nqsp.append(tcm_n_qsp)
+
     # ── disorder average ──────────────────────────────────────────────────────
     K       = len(disorder_E)
     E_arr   = np.array(disorder_E)    # (K, n_T)
@@ -403,6 +414,18 @@ def main(fnames):
             n_spins_ssf = int(np.round(np.mean(disorder_ssf_n_spins)))
             write_ssf_davg_group(hf, "ssf", T_ref, corr_sum, len(disorder_corr_ssf),
                                  sl_pos_ref, n_spins_ssf, k_dims_ref)
+
+        if disorder_tcm_corr_mean:
+            K_tcm      = len(disorder_tcm_corr_mean)
+            all_disp   = np.concatenate(disorder_tcm_disp,  axis=0)
+            all_pairs  = np.concatenate(disorder_tcm_pairs, axis=0)
+            all_corr   = np.concatenate(disorder_tcm_corr_mean, axis=1)
+            avg_nqsp   = int(np.round(np.mean(disorder_tcm_nqsp)))
+            # n_samples = K_tcm so that compute_spm's corr/n_samples gives the
+            # disorder-averaged mean: (Σ_ds C_mean_ds) / K_tcm
+            write_tcm_group(hf, "transverse_corr", T_ref,
+                            np.full(len(T_ref), K_tcm, dtype=np.float64),
+                            all_corr, all_disp, all_pairs, avg_nqsp)
 
     print(f"Disorder average of {K} seed(s) → {out_avg}")
 
