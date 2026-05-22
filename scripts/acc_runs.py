@@ -130,6 +130,11 @@ def has_ssf(fname):
     with h5py.File(fname, "r") as f:
         return "/ssf" in f
 
+def get_ssf_T(fname):
+    with h5py.File(fname, "r") as f:
+        g = f["/ssf"]
+        assert isinstance(g, h5py.Group)
+        return np.array(g["T_list"])       # (n_T,)
 
 def load_ssf(fname):
     """Return T_list, n_samples, corr, sl_positions, n_spins, k_dims."""
@@ -150,7 +155,7 @@ def check_ssf_compatibility(fnames, T_ref):
     _, _, corr0, sl_pos0, _, k_dims0 = load_ssf(fnames[0])
     T0, *_ = load_ssf(fnames[0])
     if not np.allclose(T0, T_ref):
-        raise ValueError(f"SSF T_list differs from energy T_list in {fnames[0]}")
+        raise ValueError(f"SSF T_list differs from reference T_list in {fnames[0]}")
     for fname in fnames[1:]:
         T, _, corr, sl_pos, _, k_dims = load_ssf(fname)
         if not np.allclose(T, T_ref):
@@ -257,6 +262,15 @@ def main(fnames):
         elif not np.allclose(T, T_ref):
             raise ValueError(f"Energy T_list mismatch in {fname}")
 
+    # SSF T_ref check
+    T_ref_ssf = None
+    for fname in fnames:
+        T = get_ssf_T(fname)
+        if T_ref_ssf is None:
+            T_ref_ssf=T
+        elif not np.allclose(T, T_ref_ssf):
+            raise ValueError(f"SSF T_list mismatch in {fname}")
+
     # SSF presence and global metadata check
     ssf_presence = {f: has_ssf(f) for f in fnames}
     n_with_ssf = sum(ssf_presence.values())
@@ -265,7 +279,6 @@ def main(fnames):
         print(f"Warning: {len(missing)} file(s) lack /ssf — SSF skipped for those.")
     ssf_files_all = [f for f in fnames if ssf_presence[f]]
     if ssf_files_all:
-        check_ssf_compatibility(ssf_files_all, T_ref)
         _, _, _, sl_pos_ref, _, k_dims_ref = load_ssf(ssf_files_all[0])
 
     # Group by disorder seed
