@@ -10,6 +10,7 @@ alias pqf="python3 scripts/plot_quantum_fraction.py ../output/percolator/hist_L1
 alias acc="scripts/acc_heat_capacity.py"
 alias phc=scripts/plot_heat_capacity.py
 alias cp_out="scp sheldon-fu:/scratch/alaric/out/sq_qsi/\*_merge\*.h5 ../out/sq_qsi"
+alias mec="meson compile -C build"
 
 figdir="$HOME/Documents/gh-papers/DefectsInQSI/figures"
 ddir="$SCRIPT_DIR/../out/sq_qsi"
@@ -21,6 +22,7 @@ echo `which pqf`
 echo `which acc`
 echo `which phc`
 echo `which cp_out`
+echo `which mec`
 echo
 echo "Defined env"
 echo "figdir=$figdir"
