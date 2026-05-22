@@ -352,8 +352,8 @@ def main(fnames):
         tcm_n_qsp       = None
 
         if ds_tcm_files:
-            check_tcm_compatibility(ds_tcm_files, T_ref)
-            _, n0, corr0, disp0, pairs0, nq0 = load_tcm(ds_tcm_files[0])
+            T_ref_tcm, n0, corr0, disp0, pairs0, nq0 = load_tcm(ds_tcm_files[0])
+            check_tcm_compatibility(ds_tcm_files, T_ref_tcm)
             merged_tcm_corr = corr0.copy()
             merged_tcm_n    = n0.copy()
             tcm_disp        = disp0
