@@ -22,6 +22,13 @@ import matplotlib.pyplot as plt
 import matplotlib.colors as mcolors
 
 
+plt.rcParams.update({
+    "text.usetex": True,
+    "font.family": "serif"
+})
+
+
+
 def parse_args():
     p = argparse.ArgumentParser(
         description="Plot SSF S(q) in the (h,h,l) plane from sq_pyrochlore HDF5 output."
@@ -343,7 +350,7 @@ def plot_panel(ax, S2d, axis_0, axis_1, e0, e1, T, dataset, log_scale, clim):
         norm=norm, cmap="inferno", shading="auto",
     )
     cb_label = {"Szz": r"$S^{zz}$ / site", "Sqq": r"$S_\perp$ / site",
-                "Spm": r"$S^{+-}$ / site"}.get(dataset, f"{dataset} / site")
+                "Spm": r"$\langle S^{+}(\bm{q}) S^-(-\bm{q})}$ / site"}.get(dataset, f"{dataset} / site")
     plt.colorbar(mesh, ax=ax, label=cb_label)
 
     ax.set_xlabel("$(%s)$  (r.l.u.)" % format_ax_label(e0, 'h', '~'))
@@ -356,7 +363,8 @@ def plot_panel(ax, S2d, axis_0, axis_1, e0, e1, T, dataset, log_scale, clim):
 def main():
     args = parse_args()
 
-    B = read_recip_latvecs(args.filename)
+    # B = read_recip_latvecs(args.filename)
+    B = 2*np.pi * np.eye(3) / 8 / 8 
     e0 = np.array(args.e0, dtype=int)
     e1 = np.array(args.e1, dtype=int)
 
