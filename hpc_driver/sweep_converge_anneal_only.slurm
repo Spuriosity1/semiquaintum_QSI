@@ -1,6 +1,6 @@
 #!/bin/bash
 
-#SBATCH -J L8_j0p05
+#SBATCH -J TEST_nsw
 #SBATCH --nodes=1
 #! number of MPI tasks
 #SBATCH --ntasks=1
@@ -11,10 +11,10 @@
 #SBATCH --mem-per-cpu=2000
 #! What types of email messages do you wish to receive?
 #SBATCH --mail-type=END
-#SBATCH --output=hpc_driver/track/%x.%A_%a.out
-#SBATCH --error=hpc_driver/track/%x.%A_%a.error
+#SBATCH --output=hpc_driver/track/c_sweep.%A_%a.out
+#SBATCH --error=hpc_driver/track/c_sweep.%A_%a.error
 #SBATCH --chdir=/scratch/alaric/semiquaintum_QSI
-#SBATCH --array=1-5120
+#SBATCH --array=0-24
 ##SBATCH --constraint='uarch:x86-64-v3|uarch:x86-64-v4'
 
 . /etc/profile.d/modules.sh                # Leave this line (enables the module command)
@@ -32,7 +32,7 @@ echo -e "Working in `pwd`.\n"
 JOBID=$SLURM_JOB_ID
 TASKID=$SLURM_ARRAY_TASK_ID
 
-OUT_PATH="../out/sq_qsi"
+OUT_PATH="../out/sq_qsi/bench"
 EXE_DIR="build/percol/"
 
 echo -e "TaskID: $TASKID\n======"
@@ -40,32 +40,42 @@ echo "Time: `date`"
 echo "Running on master node: `hostname`"
 echo "Current directory: `pwd`"
 
+#if [ "$SLURM_JOB_NODELIST" ]; then
+#        #! Create a machine file:
+#        export NODEFILE=`generate_pbs_nodefile`
+#        cat $NODEFILE | uniq > machine.file.$JOBID
+#        echo -e "\nNodes allocated:\n================"
+#        echo `cat machine.file.$JOBID | sed -e 's/\..*$//g'`
+#fi
+#
 
-X=$(( $TASKID / 5 ))
-
-
-L=8
+L=6
 DILUTION=0.05
 Jzz=1.0
-N_DISORDER_REALISATIONS=8
+N_DISORDER_REALISATIONS=1
 moves="CQBRW"
-sweep=1024
-samp=128
 
 mkdir -p $OUT_PATH
 
 # disorder realisation number
-ds=$(( $X % $N_DISORDER_REALISATIONS + 900 ))
+ds=0
 # Monte Carlo seed
-ms=$(( $X / $N_DISORDER_REALISATIONS + 9000 ))
+ms=0
 
-JpmArr=(-0.050 0.000 0.050 0.100 0.200)
-Jpm=${JpmArr[ $(($TASKID % 5)) ]}
+Jpm=0.05
 
 Jxx=$Jpm
 Jyy=$Jpm
 
-CMD="$EXE_DIR/sq_pyrochlore $L $DILUTION -o $OUT_PATH --Thot 100 --Tcold 0.01 --Jzz $Jzz --Jxx $Jxx --Jyy $Jyy --nsweep $sweep --nburn ${burn} -s $ds -m $ms --moves $moves --prefix run_Tc0.01_${moves}_sw${sweep}_samp${samp} --n_replicas 1 --nsamp ${samp}"
+sweepvals=(16 32 64 128 256)
+
+samp_id=$(( $SLURM_ARRAY_TASK_ID % 5 ))
+sweep_id=$(( $SLURM_ARRAY_TASK_ID / 5 ))
+
+burn=128
+sweep=${sweepvals[${sweep_id}]}
+samp=${sweepvals[${samp_id}]}
+
+CMD="$EXE_DIR/sq_pyrochlore $L $DILUTION -o $OUT_PATH --Thot 100 --Tcold 0.001 --Jzz $Jzz --Jxx $Jxx --Jyy $Jyy --nsweep $sweep --nburn ${burn} -s $ds -m $ms --moves $moves --prefix bm_an_${moves}_sw${sweep}_samp${samp} --n_replicas 1 --nsamp ${samp} --ignore_ssf --ignore_tcm"
 echo "$CMD"
 $CMD
-
