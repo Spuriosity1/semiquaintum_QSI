@@ -7,7 +7,7 @@ SCRIPT_DIR=$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )
 echo "source $SCRIPT_DIR"
 
 alias pqf="python3 scripts/plot_quantum_fraction.py ../output/percolator/hist_L10_*"
-alias acc="scripts/acc_heat_capacity.py"
+alias acc="scripts/acc_runs.py"
 alias phc=scripts/plot_heat_capacity.py
 alias cp_out="scp sheldon-fu:/scratch/alaric/out/sq_qsi/\*_merge\*.h5 ../out/sq_qsi"
 alias mec="meson compile -C build"
