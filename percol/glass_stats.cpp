@@ -65,7 +65,7 @@ int main (int argc, char *argv[]) {
         .required();
     ap.add_argument("--nsweep", "-w")
         .help("Iterations in the RNG sweep")
-        .default_value(static_cast<size_t>(100))
+        .default_value(static_cast<size_t>(16))
         .scan<'i', size_t>();
 
     ap.parse_args(argc, argv);
