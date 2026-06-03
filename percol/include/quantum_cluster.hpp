@@ -78,7 +78,7 @@ struct Tetra {
 
     // dynamically updated at runtime
     std::vector<Neighbour> neighbours;
-    bool can_fluctuate;
+    bool can_fluctuate=false;
 
 
     // constructors
