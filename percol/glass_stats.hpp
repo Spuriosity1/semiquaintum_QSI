@@ -140,9 +140,10 @@ class CycleFrustration {
         for (auto& [nbr, J] : neigh) {
             // start must remain the minimum-index node in the cycle
             if (nbr <= start) continue;
-            bool in_path = std::any_of(path.begin(), path.end(),
-                                       [nbr](size_t x){ return x == nbr; });
-            if (in_path) continue;
+
+	    for (const auto& x: path){
+		    if (x == nbr) continue;
+	    }
 
             if (depth == max_depth - 1) {
                 // only recurse if nbr can actually close the cycle

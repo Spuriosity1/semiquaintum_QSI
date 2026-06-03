@@ -27,3 +27,7 @@ echo
 echo "Defined env"
 echo "figdir=$figdir"
 echo "ddir=$ddir"
+
+
+module load intel-oneapi/no-python
+export CXX=icpx
