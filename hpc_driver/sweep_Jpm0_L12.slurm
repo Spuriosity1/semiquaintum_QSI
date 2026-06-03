@@ -65,6 +65,6 @@ ds=$(( $SLURM_ARRAY_TASK_ID % $N_DISORDER_REALISATIONS ))
 ms=$(( $SLURM_ARRAY_TASK_ID / $N_DISORDER_REALISATIONS ))
 
 # disorder realisation
-CMD="$EXE_DIR/sq_pyrochlore $L $DILUTION -o $OUT_PATH --Thot 100 --Tcold 0.01 --Jzz $Jzz --Jxx $Jxx --Jyy $Jyy --nsweep $sweep --nburn 128 -s $ds -m $ms --moves $moves --prefix run_sw$sweeep_$moves"
+CMD="$EXE_DIR/sq_pyrochlore $L $DILUTION -o $OUT_PATH --Thot 100 --Tcold 0.01 --Jzz $Jzz --Jxx $Jxx --Jyy $Jyy --nsweep $sweep --nburn 128 -s $ds -m $ms --moves $moves --prefix run_sw${sweeep}_$moves --classical"
 echo "$CMD"
 $CMD
