@@ -51,6 +51,7 @@ N_DISORDER_REALISATIONS=8
 moves="CQBRW"
 sweep=1024
 samp=128
+tcold=0.01
 
 mkdir -p $OUT_PATH
 
@@ -65,7 +66,7 @@ Jpm=${JpmArr[ $(($TASKID % 5)) ]}
 Jxx=$Jpm
 Jyy=$Jpm
 
-CMD="$EXE_DIR/sq_pyrochlore $L $DILUTION -o $OUT_PATH --Thot 100 --Tcold 0.01 --Jzz $Jzz --Jxx $Jxx --Jyy $Jyy --nsweep $sweep --nburn ${burn} -s $ds -m $ms --moves $moves --prefix run_Tc0.01_${moves}_sw${sweep}_samp${samp} --n_replicas 1 --nsamp ${samp}"
+CMD="$EXE_DIR/sq_pyrochlore $L $DILUTION -o $OUT_PATH --Thot 100 --Tcold ${tcold} --Jzz $Jzz --Jxx $Jxx --Jyy $Jyy --nsweep $sweep --nburn ${burn} -s $ds -m $ms --moves $moves --prefix run_Tc${tcold}_${moves}_sw${sweep}_samp${samp} --n_replicas 1 --nsamp ${samp}"
 echo "$CMD"
 $CMD
 

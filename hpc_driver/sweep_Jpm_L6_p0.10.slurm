@@ -69,7 +69,7 @@ for Jpm in -0.050 0.000 0.050 0.100 0.200; do
 Jxx=$Jpm
 Jyy=$Jpm
 
-CMD="$EXE_DIR/sq_pyrochlore $L $DILUTION -o $OUT_PATH --Thot 100 --Tcold 0.001 --Jzz $Jzz --Jxx $Jxx --Jyy $Jyy --nsweep $sweep --nburn ${burn} -s $ds -m $ms --moves $moves --prefix bm_an_${moves}_sw${sweep}_samp${samp} --n_replicas 1 --nsamp ${samp}"
+CMD="$EXE_DIR/sq_pyrochlore $L $DILUTION -o $OUT_PATH --Thot 100 --Tcold 0.01 --Jzz $Jzz --Jxx $Jxx --Jyy $Jyy --nsweep $sweep --nburn ${burn} -s $ds -m $ms --moves $moves --prefix bm_an_${moves}_sw${sweep}_samp${samp} --n_replicas 1 --nsamp ${samp}"
 echo "$CMD"
 $CMD
 echo "done"
