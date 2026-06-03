@@ -297,10 +297,17 @@ def extract_plane(data, n_spins, k_dims, e0, e1):
     # fftshift each spatial axis so Γ sits at the centre
     S_slice = np.fft.fftshift(S_slice, axes=(1, 2))
 
-    # Build axes in r.l.u., centred at Γ=0
-    # The step along axis 0 is |e0| r.l.u., etc.
-    axis_1 = (xs - p0 // 2) * np.linalg.norm(e0)   # shape (p0,)
-    axis_2 = (ys - p1 // 2) * np.linalg.norm(e1)   # shape (p1,)
+    # Build axes in cubic r.l.u., centred at Γ=0.
+    # One k-step along e0 increments h by 1/L (the component along the
+    # non-zero direction of e0).  Use the first non-zero component.
+    def _step_rlu(e, kdims):
+        nz = np.nonzero(e)[0]
+        return kdims[nz[0]] if nz.size else 1
+
+    L0 = _step_rlu(e0, k_dims)
+    L1 = _step_rlu(e1, k_dims)
+    axis_1 = (xs - p0 // 2) / L0   # shape (p0,), in cubic r.l.u.
+    axis_2 = (ys - p1 // 2) / L1   # shape (p1,), in cubic r.l.u.
 
     return S_slice, axis_1, axis_2
 
@@ -350,7 +357,7 @@ def plot_panel(ax, S2d, axis_0, axis_1, e0, e1, T, dataset, log_scale, clim):
         norm=norm, cmap="inferno", shading="auto",
     )
     cb_label = {"Szz": r"$S^{zz}$ / site", "Sqq": r"$S_\perp$ / site",
-                "Spm": r"$\langle S^{+}(\bm{q}) S^-(-\bm{q})}$ / site"}.get(dataset, f"{dataset} / site")
+                "Spm": r"$\langle S^{+}(\mathbf{q}) S^-(-\mathbf{q})$ / site"}.get(dataset, f"{dataset} / site")
     plt.colorbar(mesh, ax=ax, label=cb_label)
 
     ax.set_xlabel("$(%s)$  (r.l.u.)" % format_ax_label(e0, 'h', '~'))
@@ -363,16 +370,21 @@ def plot_panel(ax, S2d, axis_0, axis_1, e0, e1, T, dataset, log_scale, clim):
 def main():
     args = parse_args()
 
-    # B = read_recip_latvecs(args.filename)
-    B = 2*np.pi * np.eye(3) / 8 / 8 
     e0 = np.array(args.e0, dtype=int)
     e1 = np.array(args.e1, dtype=int)
+
+    # Read k_dims first so B is correct for any system size.
+    # Each conventional cubic cell spans 8 integer lattice steps, so
+    # q = K * 2π / (8 * L)  (B is diagonal with entries 2π/(8L)).
+    with h5py.File(args.filename, "r") as f:
+        k_dims = tuple(int(d) for d in f["/ssf"].attrs["k_dims"])
+    B = 2 * np.pi * np.diag([1.0 / (8 * k_dims[0]),
+                              1.0 / (8 * k_dims[1]),
+                              1.0 / (8 * k_dims[2])])
 
     if args.dataset == 'Spm':
         T_list, n_samples, corr, disp_vectors, n_pairs, n_quantum_spins = \
             read_tcm(args.filename)
-        with h5py.File(args.filename, "r") as f:
-            k_dims = tuple(int(d) for d in f["/ssf"].attrs["k_dims"])
         # compute_spm already normalises per quantum spin; pass norm_factor=1
         data = compute_spm(corr, n_samples, disp_vectors, n_quantum_spins, k_dims, B)
         norm_factor = 1
@@ -392,7 +404,7 @@ def main():
     if args.all:
         ncols = min(4, n_T)
         nrows = (n_T + ncols - 1) // ncols
-        fig, axes = plt.subplots(nrows, ncols, figsize=(4.5 * ncols, 4.0 * nrows))
+        fig, axes = plt.subplots(nrows, ncols, figsize=(2.7 * ncols, 2.7 * nrows))
         axes = np.array(axes).flatten()
         for i in range(n_T):
             plot_panel(axes[i], S_hhl[i], axis_0, axis_1, args.e0, args.e1,
@@ -408,7 +420,7 @@ def main():
                 file=sys.stderr,
             )
             sys.exit(1)
-        fig, ax = plt.subplots(figsize=(5.5, 5.0))
+        fig, ax = plt.subplots(figsize=(3, 2.2))
         plot_panel(ax, S_hhl[t_idx], axis_0, axis_1, args.e0, args.e1,
                    T_list[t_idx], args.dataset, args.log, args.clim)
 
