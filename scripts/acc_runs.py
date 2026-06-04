@@ -243,13 +243,24 @@ def write_tcm_group(hf, group_name, T_list, n_samples, corr, disp_vectors,
 
 # ── main ───────────────────────────────────────────────────────────────────────
 
-def main(fnames):
-    if not fnames:
+def main(raw_fnames):
+    if not raw_fnames:
         print(
             "Usage: acc_runs.py FILE_ds0_ms0.h5 [FILE_ds0_ms1.h5 ...] FILE_ds1_ms0.h5 ...",
             file=sys.stderr,
         )
         sys.exit(1)
+
+
+    fnames=[]
+    for f in raw_fnames:
+        try:
+            with h5py.File(f, 'r') as h5f:
+                fnames.append(f)
+        except:
+            print(f"WARN: Skipping corrupt file {f}")
+            pass
+
 
     check_filename_compatibility(fnames)
 
