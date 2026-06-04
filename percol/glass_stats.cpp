@@ -19,6 +19,7 @@ using namespace std;
 std::string make_filestem(
     int L,
     float p,
+    float jpm,
     size_t seed,
     size_t nsweep,
     const std::string& prefix = "glass"
@@ -29,6 +30,7 @@ std::string make_filestem(
     oss << prefix
         << "_L" << L
         << "_p" << std::fixed << std::setprecision(3) << p
+        << "_jpm" << std::fixed << std::setprecision(3) << jpm
         << "_s" << seed
         << "_w" << nsweep;
 
@@ -132,7 +134,7 @@ int main (int argc, char *argv[]) {
 
     const int64_t nsweep_i = static_cast<int64_t>(nsweep);
 
-    std::string file_stem = make_filestem(L, p, seed, nsweep, "bonds");
+    std::string file_stem = make_filestem(L, p, jpm, seed, nsweep, "tglass");
     auto hist_fname = out_dir / (file_stem + ".h5");
 
     hid_t file_id = H5Fcreate(hist_fname.string().c_str(), H5F_ACC_TRUNC, H5P_DEFAULT, H5P_DEFAULT);
