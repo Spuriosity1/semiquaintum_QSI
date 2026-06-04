@@ -9,17 +9,22 @@ using namespace std;
 
 
 // Semi-quantum classical MC for disorderd pyrochlores.
-// 
+//
 //
 // 1. Removes spins from the lattice at random.
 // 2. Identifies 'quantum clusters' of spins
 //
 
+// Jpm sweep: -1.0 to +1.0 inclusive in steps of 0.05 (41 values)
+static constexpr double JPM_MIN  = -1.0;
+static constexpr double JPM_MAX  =  1.0;
+static constexpr double JPM_STEP =  0.05;
+static constexpr int    N_JPM    = static_cast<int>((JPM_MAX - JPM_MIN) / JPM_STEP + 0.5) + 1;
+
 
 std::string make_filestem(
     int L,
     float p,
-    float jpm,
     size_t seed,
     size_t nsweep,
     const std::string& prefix = "glass"
@@ -30,7 +35,6 @@ std::string make_filestem(
     oss << prefix
         << "_L" << L
         << "_p" << std::fixed << std::setprecision(3) << p
-        << "_jpm" << std::fixed << std::setprecision(3) << jpm
         << "_s" << seed
         << "_w" << nsweep;
 
@@ -49,11 +53,6 @@ int main (int argc, char *argv[]) {
         .scan<'i', int>();
     ap.add_argument("p")
         .help("Dilution probability")
-        .scan<'g', float>();
-
-    ap.add_argument("--jpm")
-        .help("Ratio J_\\pm / J_zz")
-        .default_value(0.3f)
         .scan<'g', float>();
 
     /// BOOK-KEEPING
@@ -76,7 +75,6 @@ int main (int argc, char *argv[]) {
 
     int L = ap.get<int>("L");
     double p = ap.get<float>("p"); // site deletion probability
-    double jpm = ap.get<float>("jpm"); 
     size_t seed = ap.get<size_t>("--seed");
 
     QClattice sc = initialise_lattice(L);
@@ -86,55 +84,61 @@ int main (int argc, char *argv[]) {
     std::mt19937 rng(seed);
     std::unordered_set<Tetra*> defect_tetras;
 
-    // stats: proportion of 3- and 4-cycles on the interaction graph which
-    // are frustrated
-    double frust_fraction_3    = 0, frust_fraction_4    = 0;
-    double frust_fraction_3_sq = 0, frust_fraction_4_sq = 0;
+    // Per-Jpm running sums for frustration and J-distribution
+    std::vector<double> frust3_sum(N_JPM, 0), frust3_sq(N_JPM, 0);
+    std::vector<double> frust4_sum(N_JPM, 0), frust4_sq(N_JPM, 0);
+    std::vector<JDistStats> jdist(N_JPM);
 
-    JDistStats jdist;
-
-    for (size_t n=0; n<nsweep; n++){
-        // Set about p*100% of the spins to "deleted" state
-        // (Bernoulli sample)
+    for (size_t n = 0; n < nsweep; n++) {
+        // Set about p*100% of the spins to "deleted" state (Bernoulli sample)
         delete_spins(rng, sc, p, defect_tetras);
-        // defect_tetras is the set of 'quantum' psuedospins
-        // (half-integer charges in CGSM)
+        // defect_tetras is the set of 'quantum' pseudospins (half-integer charges in CGSM)
         TetraBondDFS dfs_data(defect_tetras, 6);
 
-        CycleFrustration cycle_calc(dfs_data.data(), jpm);
+        // Expensive: enumerate cycles once per disorder realization
+        CycleFrustration cf(dfs_data.data());
+        auto cycles = cf.enumerate_cycles(3, 4);
 
-        jdist.accumulate(cycle_calc.bonds(), defect_tetras.size(), jpm);
+        // Cheap: classify frustration and accumulate J-stats for each Jpm
+        for (int i = 0; i < N_JPM; i++) {
+            double jpm = JPM_MIN + i * JPM_STEP;
 
-        auto cycle_stats = cycle_calc.compute(3, 4);
+            auto cs = cf.classify(cycles, jpm, 3, 4);
+            assert(cs[0].cycle_length == 3);
+            assert(cs[1].cycle_length == 4);
+            double f3 = cs[0].frust_fraction(), f4 = cs[1].frust_fraction();
+            frust3_sum[i] += f3; frust3_sq[i] += f3*f3;
+            frust4_sum[i] += f4; frust4_sq[i] += f4*f4;
 
-        assert(cycle_stats[0].cycle_length == 3);
-        assert(cycle_stats[1].cycle_length == 4);
-        double f3 = cycle_stats[0].frust_fraction();
-        double f4 = cycle_stats[1].frust_fraction();
-        frust_fraction_3 += f3;
-        frust_fraction_4 += f4;
-
-        frust_fraction_3_sq += f3 * f3;
-        frust_fraction_4_sq += f4 * f4;
+            if (std::abs(jpm) > 1e-10)
+                jdist[i].accumulate(cf.bonds(jpm), defect_tetras.size(), jpm);
+        }
     }
 
-    frust_fraction_3 /= nsweep;
-    frust_fraction_4 /= nsweep;
+    // Build output arrays
+    const double bessel = 1.0 * nsweep / (nsweep - 1);
+    std::vector<double> jpm_arr(N_JPM),    J_mean_arr(N_JPM),    J_var_arr(N_JPM);
+    std::vector<double> frust3_arr(N_JPM), frust3_stdev(N_JPM);
+    std::vector<double> frust4_arr(N_JPM), frust4_stdev(N_JPM);
+    for (int i = 0; i < N_JPM; i++) {
+        jpm_arr[i]    = JPM_MIN + i * JPM_STEP;
+        J_mean_arr[i] = jdist[i].mean();
+        J_var_arr[i]  = jdist[i].variance();
 
-    frust_fraction_3_sq /= nsweep;
-    frust_fraction_4_sq /= nsweep;
-
-    double b = 1.0*nsweep / (nsweep - 1); // bessel correction factor
-
-    double var_frust_fraction_3 = b * (frust_fraction_3_sq - frust_fraction_3*frust_fraction_3);
-    double var_frust_fraction_4 = b * (frust_fraction_4_sq - frust_fraction_4*frust_fraction_4);
+        double f3 = frust3_sum[i] / nsweep, f3sq = frust3_sq[i] / nsweep;
+        double f4 = frust4_sum[i] / nsweep, f4sq = frust4_sq[i] / nsweep;
+        frust3_arr[i]   = f3;
+        frust4_arr[i]   = f4;
+        frust3_stdev[i] = std::sqrt(bessel * (f3sq - f3*f3));
+        frust4_stdev[i] = std::sqrt(bessel * (f4sq - f4*f4));
+    }
 
 
     std::filesystem::path out_dir = ap.get<std::string>("--output_dir");
 
     const int64_t nsweep_i = static_cast<int64_t>(nsweep);
 
-    std::string file_stem = make_filestem(L, p, jpm, seed, nsweep, "tglass");
+    std::string file_stem = make_filestem(L, p, seed, nsweep, "tglass");
     auto hist_fname = out_dir / (file_stem + ".h5");
 
     hid_t file_id = H5Fcreate(hist_fname.string().c_str(), H5F_ACC_TRUNC, H5P_DEFAULT, H5P_DEFAULT);
@@ -142,13 +146,6 @@ int main (int argc, char *argv[]) {
         throw std::runtime_error("Failed to create HDF5 file: " + hist_fname.string());
 
     // helpers
-    auto write_1d_i64 = [&](const char* name, const int64_t* data, hsize_t len) {
-        hid_t space = H5Screate_simple(1, &len, nullptr);
-        hid_t ds    = H5Dcreate2(file_id, name, H5T_NATIVE_INT64, space,
-                                  H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT);
-        H5Dwrite(ds, H5T_NATIVE_INT64, H5S_ALL, H5S_ALL, H5P_DEFAULT, data);
-        H5Dclose(ds); H5Sclose(space);
-    };
     auto write_1d_f64 = [&](const char* name, const double* data, hsize_t len) {
         hid_t space = H5Screate_simple(1, &len, nullptr);
         hid_t ds    = H5Dcreate2(file_id, name, H5T_NATIVE_DOUBLE, space,
@@ -157,17 +154,14 @@ int main (int argc, char *argv[]) {
         H5Dclose(ds); H5Sclose(space);
     };
 
-    // J distribution arrays
-    write_1d_i64("J_hist",        jdist.hist.data(),
-                 static_cast<hsize_t>(JDistStats::NBINS));
-    {
-        auto edges = JDistStats::bin_edges();
-        write_1d_f64("J_bin_edges", edges.data(),
-                     static_cast<hsize_t>(edges.size()));
-    }
-    if (!jdist.degree_hist.empty())
-        write_1d_i64("degree_hist", jdist.degree_hist.data(),
-                     static_cast<hsize_t>(jdist.degree_hist.size()));
+    // Jpm sweep arrays
+    write_1d_f64("jpm",              jpm_arr.data(),    static_cast<hsize_t>(N_JPM));
+    write_1d_f64("J_mean",           J_mean_arr.data(), static_cast<hsize_t>(N_JPM));
+    write_1d_f64("J_variance",       J_var_arr.data(),  static_cast<hsize_t>(N_JPM));
+    write_1d_f64("frust_3_cycle",    frust3_arr.data(), static_cast<hsize_t>(N_JPM));
+    write_1d_f64("frust_4_cycle",    frust4_arr.data(), static_cast<hsize_t>(N_JPM));
+    write_1d_f64("frust_3_cycle_stdev", frust3_stdev.data(), static_cast<hsize_t>(N_JPM));
+    write_1d_f64("frust_4_cycle_stdev", frust4_stdev.data(), static_cast<hsize_t>(N_JPM));
 
     // scalars
     {
@@ -179,23 +173,8 @@ int main (int argc, char *argv[]) {
             printf("%s\t%lld\n", name, val);
             H5Dclose(ds);
         };
-        auto write_f64 = [&](const char* name, double val) {
-            hid_t ds = H5Dcreate2(file_id, name, H5T_NATIVE_DOUBLE, space,
-                                   H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT);
-            H5Dwrite(ds, H5T_NATIVE_DOUBLE, H5S_ALL, H5S_ALL, H5P_DEFAULT, &val);
-            printf("%s\t%lf\n", name, val);
-            H5Dclose(ds);
-        };
-        write_i64("nsweep",              nsweep_i);
-        write_i64("L",                   static_cast<int64_t>(L));
-        write_f64("frust_3_cycle",       frust_fraction_3);
-        write_f64("frust_4_cycle",       frust_fraction_4);
-        write_f64("frust_3_cycle_stdev", sqrt(var_frust_fraction_3));
-        write_f64("frust_4_cycle_stdev", sqrt(var_frust_fraction_4));
-        write_f64("J_mean",              jdist.mean());
-        write_f64("J_variance",          jdist.variance());
-        write_f64("J_neg_frac",          jdist.neg_frac());
-        write_f64("jpm",                 jpm);
+        write_i64("nsweep", nsweep_i);
+        write_i64("L",      static_cast<int64_t>(L));
         H5Sclose(space);
     }
 

@@ -98,63 +98,78 @@ struct Bond { size_t lo, hi; double J; };
 // (default {1,3,5} = 2-, 4-, 6-hop diamond paths). Multiple paths between
 // the same pair at the same hop length are summed; bonds at different hop
 // lengths are then summed into a single effective J per pair.
+//
+// Usage pattern for sweeping Jpm:
+//   CycleFrustration cf(dfs_data.data());          // once per disorder realization
+//   auto cycles = cf.enumerate_cycles(3, 4);       // expensive DFS, also once
+//   for (double jpm : jpm_values) {
+//       auto stats = cf.classify(cycles, jpm, 3, 4); // cheap per-Jpm
+//       auto bds   = cf.bonds(jpm);                  // cheap per-Jpm
+//   }
 class CycleFrustration {
-    // Keyed only on nodes that have at least one bond; isolated defects absent.
-    std::unordered_map<size_t, std::vector<std::pair<size_t, double>>> adj_;
+public:
+    struct CycleBond { size_t lo, hi; };
+    struct EnumeratedCycle { int length; std::vector<CycleBond> bonds; };
 
-    const std::vector<std::pair<size_t,double>>& neighbours(size_t u) const {
-        static const std::vector<std::pair<size_t,double>> empty;
-        auto it = adj_.find(u);
-        return it != adj_.end() ? it->second : empty;
+private:
+    struct BondCounts { int n2 = 0, n4 = 0, n6 = 0; };
+
+    // Path counts per canonical (lo < hi) bond pair
+    std::map<std::pair<size_t,size_t>, BondCounts> bond_counts_;
+    // Topology adjacency: both directions, used only for cycle enumeration
+    std::unordered_map<size_t, std::vector<size_t>> adj_topo_;
+
+    double J_from_counts(const BondCounts& bc, double Jpm) const {
+        return bc.n2 * Jfunc(Jpm, 2) + bc.n4 * Jfunc(Jpm, 4) + bc.n6 * Jfunc(Jpm, 6);
     }
 
-    // Single DFS pass covering all cycle lengths in [min_depth+1, max_depth+1].
-    // At each eligible depth, tries to close back to start and records the result.
-    void dfs(std::vector<size_t>& path, double J_prod,
-             size_t start, int min_depth, int max_depth,
-             std::vector<FrustrationStats>& stats) const
+    // DFS for cycle enumeration — topology only, no J values.
+    // Canonical orientation: only records cycle A-B-…-Z when B < Z.
+    void dfs_enum(std::vector<size_t>& path, size_t start,
+                  int min_depth, int max_depth,
+                  std::vector<EnumeratedCycle>& cycles) const
     {
         size_t curr  = path.back();
         int    depth = static_cast<int>(path.size()) - 1;
 
-        auto& neigh = neighbours(curr);
+        auto it = adj_topo_.find(curr);
+        if (it == adj_topo_.end()) return;
 
-        // Try to close the cycle at this depth if long enough
         if (depth >= min_depth) {
-            for (auto& [nbr, J] : neigh) {
+            for (size_t nbr : it->second) {
                 if (nbr != start) continue;
-                // Canonical orientation: count A-B-...-Z only when B < Z,
-                // suppressing the reverse duplicate A-Z-...-B.
                 if (path[1] < path.back()) {
-                    double prod = J_prod * J;
-                    auto& s = stats[depth - min_depth];
-                    ++s.n_total;
-                    if (prod < 0.0) ++s.n_frustrated;
+                    EnumeratedCycle cyc;
+                    cyc.length = depth + 1;
+                    cyc.bonds.reserve(depth + 1);
+                    for (int k = 0; k < depth; ++k) {
+                        size_t a = path[k], b = path[k+1];
+                        cyc.bonds.push_back({std::min(a,b), std::max(a,b)});
+                    }
+                    cyc.bonds.push_back({std::min(path.back(), start),
+                                         std::max(path.back(), start)});
+                    cycles.push_back(std::move(cyc));
                 }
-                break; // at most one edge to start after bond aggregation
+                break;
             }
         }
 
         if (depth == max_depth) return;
 
-        for (auto& [nbr, J] : neigh) {
-            // start must remain the minimum-index node in the cycle
+        for (size_t nbr : it->second) {
             if (nbr <= start) continue;
 
-	    for (const auto& x: path){
-		    if (x == nbr) continue;
-	    }
-
             if (depth == max_depth - 1) {
-                // only recurse if nbr can actually close the cycle
                 bool closeable = false;
-                for (auto& [n2, _] : neighbours(nbr))
-                    if (n2 == start) { closeable = true; break; }
+                auto it2 = adj_topo_.find(nbr);
+                if (it2 != adj_topo_.end())
+                    for (size_t n2 : it2->second)
+                        if (n2 == start) { closeable = true; break; }
                 if (!closeable) continue;
             }
 
             path.push_back(nbr);
-            dfs(path, J_prod * J, start, min_depth, max_depth, stats);
+            dfs_enum(path, start, min_depth, max_depth, cycles);
             path.pop_back();
         }
     }
@@ -164,10 +179,8 @@ public:
     // Default {1,3,5} selects the physically relevant even-hop paths
     // (2-, 4-, 6-hops on the diamond lattice).
     CycleFrustration(const std::vector<std::vector<CountCOO>>& bond_data,
-                     double Jpm,
                      const std::vector<int>& hop_depths = {1, 3, 5})
     {
-        // Aggregate: count paths per (lo, hi, hop_length)
         std::map<std::tuple<size_t,size_t,int>, int> path_counts;
         for (int d : hop_depths) {
             int hop = d + 1;
@@ -177,46 +190,65 @@ public:
             }
         }
 
-        // Sum contributions from all hop lengths into one effective J per pair
-        std::map<std::pair<size_t,size_t>, double> bond_J;
         for (auto& [key, n] : path_counts) {
             auto [lo, hi, hop] = key;
-            bond_J[{lo, hi}] += n * Jfunc(Jpm, hop);
+            auto& bc = bond_counts_[{lo, hi}];
+            if      (hop == 2) bc.n2 += n;
+            else if (hop == 4) bc.n4 += n;
+            else if (hop == 6) bc.n6 += n;
         }
 
-        adj_.reserve(2 * bond_J.size()); // each bond touches at most 2 distinct nodes
-        for (auto& [pair, J] : bond_J) {
-            adj_[pair.first ].emplace_back(pair.second, J);
-            adj_[pair.second].emplace_back(pair.first,  J);
+        for (auto& [pair, bc] : bond_counts_) {
+            adj_topo_[pair.first ].push_back(pair.second);
+            adj_topo_[pair.second].push_back(pair.first );
         }
     }
 
-    // Iterate only over the lo side of each bond (forward edges, no double-count).
-    std::vector<Bond> bonds() const {
-        std::vector<Bond> result;
-        for (auto& [u, nbrs] : adj_)
-            for (auto& [v, J] : nbrs)
-                if (v > u)
-                    result.push_back({u, v, J});
-        return result;
-    }
-
-    // Returns one FrustrationStats per cycle length in [min_N, max_N].
-    // A single DFS pass covers the whole range without redundant traversal.
-    std::vector<FrustrationStats> compute(int min_N, int max_N) const {
-        std::vector<FrustrationStats> stats;
-        stats.reserve(max_N - min_N + 1);
-        for (int n = min_N; n <= max_N; ++n)
-            stats.push_back({n, 0, 0});
-
+    // Enumerate all simple cycles of length [min_N, max_N]. Expensive: O(N * paths).
+    // Call once per disorder realization and reuse for multiple Jpm values.
+    std::vector<EnumeratedCycle> enumerate_cycles(int min_N, int max_N) const {
+        std::vector<EnumeratedCycle> cycles;
         std::vector<size_t> path;
         path.reserve(max_N);
-        for (auto& [s, _] : adj_) {
+        for (auto& [s, _] : adj_topo_) {
             path.push_back(s);
-            dfs(path, 1.0, s, min_N - 1, max_N - 1, stats);
+            dfs_enum(path, s, min_N - 1, max_N - 1, cycles);
             path.pop_back();
         }
+        return cycles;
+    }
+
+    // Evaluate frustration for a specific Jpm from pre-enumerated cycles. Cheap.
+    std::vector<FrustrationStats> classify(const std::vector<EnumeratedCycle>& cycles,
+                                           double Jpm, int min_N, int max_N) const
+    {
+        std::vector<FrustrationStats> stats;
+        stats.reserve(max_N - min_N + 1);
+        for (int n = min_N; n <= max_N; ++n) stats.push_back({n, 0, 0});
+
+        for (auto& cyc : cycles) {
+            int idx = cyc.length - min_N;
+            if (idx < 0 || idx >= static_cast<int>(stats.size())) continue;
+            auto& s = stats[idx];
+            ++s.n_total;
+            double J_prod = 1.0;
+            for (auto& b : cyc.bonds) {
+                auto it = bond_counts_.find({b.lo, b.hi});
+                if (it != bond_counts_.end())
+                    J_prod *= -J_from_counts(it->second, Jpm);
+            }
+            if (J_prod < 0.0) ++s.n_frustrated;
+        }
         return stats;
+    }
+
+    // Build bond list with J values for a specific Jpm. Cheap.
+    std::vector<Bond> bonds(double Jpm) const {
+        std::vector<Bond> result;
+        result.reserve(bond_counts_.size());
+        for (auto& [pair, bc] : bond_counts_)
+            result.push_back({pair.first, pair.second, J_from_counts(bc, Jpm)});
+        return result;
     }
 };
 
