@@ -8,13 +8,13 @@
 #! How much wallclock time will be required?
 #SBATCH --time=18:00:00
 #SBATCH --cpus-per-task=1
-#SBATCH --mem-per-cpu=2000
+#SBATCH --mem-per-cpu=5000
 #! What types of email messages do you wish to receive?
 #SBATCH --mail-type=END
 #SBATCH --output=hpc_driver/track/%x.%A_%a.out
 #SBATCH --error=hpc_driver/track/%x.%A_%a.error
 #SBATCH --chdir=/scratch/alaric/semiquaintum_QSI
-#SBATCH --array=0-1024
+##SBATCH --array=0-1024
 ##SBATCH --constraint='uarch:x86-64-v3|uarch:x86-64-v4'
 
 . /etc/profile.d/modules.sh                # Leave this line (enables the module command)
