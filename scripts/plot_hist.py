@@ -9,10 +9,6 @@ import matplotlib as mpl
 import h5py
 
 
-plt.rcParams.update({
-    "text.usetex": True,
-    "font.family": "serif"
-})
 
 
 def parse_filename(path):
@@ -47,41 +43,16 @@ def log_rebin(sizes, counts, count_vars,
     
     return edges[:-1], edges[1:], binned_counts, binned_spin_counts, binned_count_vars, binned_spin_count_vars
 
-def main():
-    parser = argparse.ArgumentParser(
-        description="Plots the histogram.",
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog=__doc__,
-    )
-    parser.add_argument("histfile", nargs='+', help="hist CSV file")
-    parser.add_argument("--logplot", action='store_true',help='plots on a log scale')
-    parser.add_argument("--title")
-#    parser.add_argument("--rebin")
-    parser.add_argument("--plot_ratio", action='store_true',
-                        help=r"plots fraction of spins in the cluster (i.e. cluster frequency * cluster size) ")
-    parser.add_argument("--plot_legend", action='store_true',
-                        help=r"plots a legend ")
-    parser.add_argument("--plot_colorbar", action='store_true',
-                        help=r"plots a colorbar legend ")
-    parser.add_argument("--noprobdistf", action='store_true',
-                        help=r"Does not corrects for uneven bin width on log scale")
 
-    args=parser.parse_args()
+def plot_histfile(ax, histfiles, plot_ratio=False, noprobdistf=True):
 
-    fig, ax = plt.subplots(figsize=(3.5, 3))
 
-    if args.plot_ratio:
-        ax.set_ylabel(r"$s\cdot n(s)$")
-    else:
-        ax.set_ylabel("$n(s)$")
-
-    nfiles = len(args.histfile)
     cmap = plt.colormaps['jet']
 
 
     # --- collect p values first ---
     ps = []
-    for f in args.histfile:
+    for f in histfiles:
         _, p = parse_filename(os.path.basename(f))
         ps.append(p)
 
@@ -90,8 +61,12 @@ def main():
     sm = mpl.cm.ScalarMappable(cmap=cmap, norm=norm)
     sm.set_array([])
 
-    for i, f in enumerate(args.histfile):
+    seen_L = set()
+
+    for i, f in enumerate(histfiles):
         L, p = parse_filename(os.path.basename(f))
+        if L not in seen_L:
+            ax.axvline(L**3 * 16,color='k',ls=':')
 
         with h5py.File(f, "r") as f:
             sizes=np.array(f["sizes"][()])
@@ -106,7 +81,7 @@ def main():
                                        s_min=1, s_max=np.pow(10,max_decade),
                                        n_bins=int(max_decade*10+1))
         color = cmap(norm(p))
-        if args.plot_ratio:
+        if plot_ratio:
             ys = bsc / (N * (1-p) * nsweep)
             ys_error = np.sqrt(v_bsc / nsweep) / N / (1-p)
         else:
@@ -116,7 +91,7 @@ def main():
 
 
         bin_w = rights - lefts
-        if not args.noprobdistf:
+        if not noprobdistf:
             # correct for uneven bin width
             ys /= bin_w
             ys_error /= bin_w
@@ -139,12 +114,51 @@ def main():
         print(f"\taverage {100.0*total_percolaing/nsweep/N:.2f}% of spins in >10^{np.log10(thresh):.0f} clusters")
         print(f"\tintegral of y-axis: {(ys * bin_w).sum()} ?= {(sizes*counts).sum() /N / nsweep}")
 
+    return sm
+
+
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="Plots the histogram.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=__doc__,
+    )
+    parser.add_argument("histfile", nargs='+', help="hist CSV file")
+    parser.add_argument("--logplot", action='store_true',help='plots on a log scale')
+    parser.add_argument("--title")
+#    parser.add_argument("--rebin")
+    parser.add_argument("--plot_ratio", action='store_true',
+                        help=r"plots fraction of spins in the cluster (i.e. cluster frequency * cluster size) ")
+    parser.add_argument("--plot_legend", action='store_true',
+                        help=r"plots a legend ")
+    parser.add_argument("--plot_colorbar", action='store_true',
+                        help=r"plots a colorbar legend ")
+    parser.add_argument("--noprobdistf", action='store_true',
+                        help=r"Does not corrects for uneven bin width on log scale")
+    parser.add_argument("-o", "--out", help="file path (with extension) to save")
+
+    args=parser.parse_args()
+
+    fig, ax = plt.subplots(figsize=(3.5, 3))
+
+    sm = plot_histfile(ax, args.histfile, args.plot_ratio, args.noprobdistf)
+
+
     if (args.title is not None):
         ax.set_title(args.title)
     ax.set_xlabel("Cluster Size $s$")
 
+
+    if args.plot_ratio:
+        ax.set_ylabel(r"$s\cdot n(s)$")
+    else:
+        ax.set_ylabel("$n(s)$")
+    
+
     if args.plot_legend:
-        ax.legend(prop={'size': 8})
+        ax.legend(prop={'size': 8}, framealpha=1)
     elif args.plot_colorbar:
         cbar = fig.colorbar(sm, ax=ax)
         cbar.set_label("Disorder fraction $p$")
@@ -159,6 +173,14 @@ def main():
         ax.set_ylim(0,None)
 
     fig.tight_layout()
+    if args.out is not None:
+        fig.savefig(args.out)
     plt.show()
 
-main()
+if __name__=="__main__":
+
+    plt.rcParams.update({
+        "text.usetex": True,
+        "font.family": "serif"
+    })
+    main()

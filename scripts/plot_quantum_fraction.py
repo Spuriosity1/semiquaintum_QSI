@@ -27,17 +27,21 @@ from collections import defaultdict
 import matplotlib.pyplot as plt
 import matplotlib.ticker as mtick
 import numpy as np
+import h5py
 
 plt.rcParams.update({
     "text.usetex": True,
-    "font.family": "serif"
+    "font.family": "serif",
+    "font.size": 8,
+    'font.sans-serif': 'cm'
 })
 
 
+
 def parse_filename(path):
-    """Extract (L, p, seed, nsweep, clust_type) from a hist CSV filename."""
+    """Extract (L, p, seed, nsweep, clust_type) from a hist HDF5 filename."""
     name = os.path.basename(path)
-    m = re.search(r"L(\d+)_p([0-9.]+)_s(\d+)_w(\d+)_([\w]+)\.csv$", name)
+    m = re.search(r"L(\d+)_p([0-9.]+)_s(\d+)_w(\d+)_([\w]+)\.h5$", name)
     if not m:
         raise ValueError(f"Filename not in expected format: {path}")
     L        = int(m.group(1))
@@ -48,12 +52,19 @@ def parse_filename(path):
     return L, p, seed, nsweep, clust_type
 
 
-def quantum_fraction(csv_path, L, nsweep):
+def parse_h5(h5_path):
+    with h5py.File(h5_path) as hf:
+        nsweep = int(hf["nsweep"][()])
+        counts = np.array(hf["counts"][:])
+        sizes = np.array(hf["sizes"][:])
+    
+    return sizes, counts, nsweep
+
+
+def quantum_fraction(h5_path, L, nsweep):
     """Return fraction of spins residing in quantum clusters."""
-    data = np.genfromtxt(csv_path, delimiter='\t', skip_header=1)
-    if data.ndim < 2 or data.size == 0:
-        return 0.0
-    n_quantum = np.sum(data[:, 0] * data[:, 1])   # size * count
+    size, count, nsweep = parse_h5(h5_path)
+    n_quantum = np.sum(size * count)   # size * count
     n_total   = L**3 * 16 * nsweep
     return n_quantum / n_total
 
@@ -64,6 +75,7 @@ def main():
     parser.add_argument("histfiles", nargs='+', help="hist CSV files from sq_pyrochlore_dump")
     parser.add_argument("--save", metavar="FILE", help="save figure instead of showing")
     parser.add_argument("--plot-remainder", nargs='+', help="ctypes to plot 1- of")
+    parser.add_argument("--figsize", nargs=2, type=float, help="Figure size in inches", default=(3.5,2))
     args = parser.parse_args()
 
     # group files by (L, clust_type)
@@ -84,7 +96,7 @@ def main():
         print("No valid files found.")
         return
 
-    fig, ax = plt.subplots(figsize=(3.5, 3))
+    fig, ax = plt.subplots(figsize=tuple(args.figsize))
 
     styles = {
             'nn2': {
@@ -96,7 +108,7 @@ def main():
             'nn24': {
         'ls': None, 
         'color': 'b',
-        'label': r'$O(J_\pm^2/J_{zz})$',
+        'label': r'$O(J_{\pm}^{2}/J_{zz})$',
         'marker': None
         }
     }
@@ -124,8 +136,8 @@ def main():
         if args.plot_remainder and ctype=='nn24':
             ax.plot(ps, 1.-fracs_corrected, 'k', label='ringflip only')
 
-    ax.set_xlabel("Disorder concentration $p$")
-    ax.set_ylabel("Fraction of remaining spins")
+    ax.set_xlabel(r"Disorder $p$")
+    ax.set_ylabel(r"$N_u/N_{sp}$")
     ax.set_xlim(left=0)
     ax.set_ylim(0, 1)
     ax.legend(fontsize=8)
@@ -135,7 +147,11 @@ def main():
 
     fig.tight_layout()
 
-    ax.set_xticks(np.arange(0,0.25, 0.01),minor=True)
+
+    ax.set_xticks(np.arange(0,0.25, 0.1),minor=False)
+    ax.set_yticks(np.arange(0,1.1, 0.25),minor=False)
+
+    ax.set_xticks(np.arange(0,0.26, 0.01),minor=True)
     ax.set_yticks(np.arange(0,1, 0.02),minor=True)
 
     if args.save:

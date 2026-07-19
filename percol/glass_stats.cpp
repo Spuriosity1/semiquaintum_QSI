@@ -16,9 +16,9 @@ using namespace std;
 //
 
 // Jpm sweep: -1.0 to +1.0 inclusive in steps of 0.05 (41 values)
-static constexpr double JPM_MIN  = -1.0;
+static constexpr double JPM_MIN  = 0;
 static constexpr double JPM_MAX  =  1.0;
-static constexpr double JPM_STEP =  0.05;
+static constexpr double JPM_STEP =  0.01;
 static constexpr int    N_JPM    = static_cast<int>((JPM_MAX - JPM_MIN) / JPM_STEP + 0.5) + 1;
 
 
@@ -87,6 +87,8 @@ int main (int argc, char *argv[]) {
     // Per-Jpm running sums for frustration and J-distribution
     std::vector<double> frust3_sum(N_JPM, 0), frust3_sq(N_JPM, 0);
     std::vector<double> frust4_sum(N_JPM, 0), frust4_sq(N_JPM, 0);
+    std::vector<double> wfrust3_sum(N_JPM, 0), wfrust3_sq(N_JPM, 0);
+    std::vector<double> wfrust4_sum(N_JPM, 0), wfrust4_sq(N_JPM, 0);
     std::vector<JDistStats> jdist(N_JPM);
 
     for (size_t n = 0; n < nsweep; n++) {
@@ -109,6 +111,10 @@ int main (int argc, char *argv[]) {
             double f3 = cs[0].frust_fraction(), f4 = cs[1].frust_fraction();
             frust3_sum[i] += f3; frust3_sq[i] += f3*f3;
             frust4_sum[i] += f4; frust4_sq[i] += f4*f4;
+            double wf3 = cs[0].weighted_frust_fraction();
+            double wf4 = cs[1].weighted_frust_fraction();
+            wfrust3_sum[i] += wf3; wfrust3_sq[i] += wf3*wf3;
+            wfrust4_sum[i] += wf4; wfrust4_sq[i] += wf4*wf4;
 
             if (std::abs(jpm) > 1e-10)
                 jdist[i].accumulate(cf.bonds(jpm), defect_tetras.size(), jpm);
@@ -117,9 +123,11 @@ int main (int argc, char *argv[]) {
 
     // Build output arrays
     const double bessel = 1.0 * nsweep / (nsweep - 1);
-    std::vector<double> jpm_arr(N_JPM),    J_mean_arr(N_JPM),    J_var_arr(N_JPM);
-    std::vector<double> frust3_arr(N_JPM), frust3_stdev(N_JPM);
-    std::vector<double> frust4_arr(N_JPM), frust4_stdev(N_JPM);
+    std::vector<double> jpm_arr(N_JPM),     J_mean_arr(N_JPM),     J_var_arr(N_JPM);
+    std::vector<double> frust3_arr(N_JPM),  frust3_stdev(N_JPM);
+    std::vector<double> frust4_arr(N_JPM),  frust4_stdev(N_JPM);
+    std::vector<double> wfrust3_arr(N_JPM), wfrust3_stdev(N_JPM);
+    std::vector<double> wfrust4_arr(N_JPM), wfrust4_stdev(N_JPM);
     for (int i = 0; i < N_JPM; i++) {
         jpm_arr[i]    = JPM_MIN + i * JPM_STEP;
         J_mean_arr[i] = jdist[i].mean();
@@ -131,6 +139,13 @@ int main (int argc, char *argv[]) {
         frust4_arr[i]   = f4;
         frust3_stdev[i] = std::sqrt(bessel * (f3sq - f3*f3));
         frust4_stdev[i] = std::sqrt(bessel * (f4sq - f4*f4));
+
+        double wf3 = wfrust3_sum[i] / nsweep, wf3sq = wfrust3_sq[i] / nsweep;
+        double wf4 = wfrust4_sum[i] / nsweep, wf4sq = wfrust4_sq[i] / nsweep;
+        wfrust3_arr[i]   = wf3;
+        wfrust4_arr[i]   = wf4;
+        wfrust3_stdev[i] = std::sqrt(bessel * (wf3sq - wf3*wf3));
+        wfrust4_stdev[i] = std::sqrt(bessel * (wf4sq - wf4*wf4));
     }
 
 
@@ -158,10 +173,14 @@ int main (int argc, char *argv[]) {
     write_1d_f64("jpm",              jpm_arr.data(),    static_cast<hsize_t>(N_JPM));
     write_1d_f64("J_mean",           J_mean_arr.data(), static_cast<hsize_t>(N_JPM));
     write_1d_f64("J_variance",       J_var_arr.data(),  static_cast<hsize_t>(N_JPM));
-    write_1d_f64("frust_3_cycle",    frust3_arr.data(), static_cast<hsize_t>(N_JPM));
-    write_1d_f64("frust_4_cycle",    frust4_arr.data(), static_cast<hsize_t>(N_JPM));
-    write_1d_f64("frust_3_cycle_stdev", frust3_stdev.data(), static_cast<hsize_t>(N_JPM));
-    write_1d_f64("frust_4_cycle_stdev", frust4_stdev.data(), static_cast<hsize_t>(N_JPM));
+    write_1d_f64("frust_3_cycle",          frust3_arr.data(),   static_cast<hsize_t>(N_JPM));
+    write_1d_f64("frust_4_cycle",          frust4_arr.data(),   static_cast<hsize_t>(N_JPM));
+    write_1d_f64("frust_3_cycle_stdev",    frust3_stdev.data(), static_cast<hsize_t>(N_JPM));
+    write_1d_f64("frust_4_cycle_stdev",    frust4_stdev.data(), static_cast<hsize_t>(N_JPM));
+    write_1d_f64("wfrust_3_cycle",         wfrust3_arr.data(),   static_cast<hsize_t>(N_JPM));
+    write_1d_f64("wfrust_4_cycle",         wfrust4_arr.data(),   static_cast<hsize_t>(N_JPM));
+    write_1d_f64("wfrust_3_cycle_stdev",   wfrust3_stdev.data(), static_cast<hsize_t>(N_JPM));
+    write_1d_f64("wfrust_4_cycle_stdev",   wfrust4_stdev.data(), static_cast<hsize_t>(N_JPM));
 
     // scalars
     {

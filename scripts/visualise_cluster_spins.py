@@ -8,7 +8,7 @@ Spins file columns (tab-separated):
 Bonds file columns (tab-separated):
     &site_a  &site_b
 
-Rules:
+Rules (normal mode):
   - Normal spins (deleted=0, cluster_root=NULL)  → black filled circle
   - Deleted spins (deleted=1)                    → hollow red circle
   - Cluster spins (cluster_root != NULL)          → filled square, color unique per cluster
@@ -16,10 +16,15 @@ Rules:
   - Bonds where both endpoints in same cluster    → colored lines (cluster color)
   - Bonds crossing cluster boundaries / mixed     → white lines
 
+Wireframe mode (--wireframe):
+  - All spins rendered as small grey dots
+  - All bonds rendered as dim grey lines
+  - Each cluster rendered as a semi-transparent convex-hull mesh
+
 Uses FURY for GPU-accelerated rendering, efficient for 10k+ spins / 100k+ bonds.
 
 Usage:
-    python visualise_spins.py spins.csv [bonds.csv]
+    python visualise_spins.py spins.csv [bonds.csv] [--wireframe]
 """
 
 import argparse
@@ -145,8 +150,10 @@ def cluster_colormap(n_clusters: int) -> np.ndarray:
 # Visualisation
 # ---------------------------------------------------------------------------
 
+
 def visualise(positions: np.ndarray, deleted: np.ndarray,
-              cluster_ids: np.ndarray, bonds: np.ndarray):
+              cluster_ids: np.ndarray, bonds: np.ndarray,
+              wireframe: bool = False):
     try:
         from fury import actor, window
     except ImportError:
@@ -176,80 +183,131 @@ def visualise(positions: np.ndarray, deleted: np.ndarray,
     scene = window.Scene()
     scene.SetBackground(0.12, 0.12, 0.14)
 
-    # ===== BONDS ============================================================
-    if len(bonds) > 0:
-        cid_a = cluster_ids[bonds[:, 0]]
-        cid_b = cluster_ids[bonds[:, 1]]
+    # ===== helper to add bond segments ======================================
+    def add_bonds_uniform(bmask, rgb, linewidth, opacity):
+        sel   = bonds[bmask]
+        pts_a = pos[sel[:, 0]]
+        pts_b = pos[sel[:, 1]]
+        segs = []
+        for a, b in zip(pts_a, pts_b):
+            if np.linalg.norm(a - b) < 10:
+                segs.append(np.array([a, b], dtype=np.float32))
+        scene.add(actor.line(segs, colors=rgb, linewidth=linewidth, opacity=opacity))
 
-        # Same non-zero cluster on both ends
-        mask_same  = (cid_a != 0) & (cid_b != 0) & (cid_a == cid_b)
-        # At least one end in a cluster, but not the same
-        mask_cross = ((cid_a != 0) | (cid_b != 0)) & ~mask_same
-        # Both ends outside any cluster
-        mask_plain = ~mask_same & ~mask_cross
+    def add_bonds_colored(bmask, color_per_seg, linewidth, opacity):
+        sel   = bonds[bmask]
+        pts_a = pos[sel[:, 0]]
+        pts_b = pos[sel[:, 1]]
+        segs, cols = [], []
+        for a, b, c in zip(pts_a, pts_b, color_per_seg):
+            if np.linalg.norm(a - b) < 10:
+                segs.append(np.array([a, b], dtype=np.float32))
+                cols.append(tuple(c))
+        scene.add(actor.line(segs, colors=cols, linewidth=linewidth, opacity=opacity))
 
-        def add_bonds_uniform(bmask, rgb, linewidth, opacity):
-            """All bonds in bmask share a single uniform color (tuple/list of 3 floats)."""
-            sel  = bonds[bmask]
-            pts_a = pos[sel[:, 0]]
-            pts_b = pos[sel[:, 1]]
-            # actor.line wants a list of (N,3) polylines; each 2-point segment is one line
-            segs = [np.array([a, b], dtype=np.float32) for a, b in zip(pts_a, pts_b)]
-            act  = actor.line(segs, colors=rgb, linewidth=linewidth, opacity=opacity)
-            scene.add(act)
+    # ========================================================================
+    if wireframe:
+        # ===== WIREFRAME MODE ===============================================
+        try:
+            import meshlib.mrmeshpy as mrmeshpy
+            import meshlib.mrmeshnumpy as mrmeshnumpy
+        except ImportError:
+            sys.exit("meshlib is not installed.  Run:  pip install meshlib")
 
-        def add_bonds_colored(bmask, color_per_seg, linewidth, opacity):
-            """Each bond in bmask gets its own color; color_per_seg is (M,3) float32."""
-            sel   = bonds[bmask]
-            pts_a = pos[sel[:, 0]]
-            pts_b = pos[sel[:, 1]]
-            colors = color_per_seg
-            segs   = [np.array([a, b], dtype=np.float32) for a, b in zip(pts_a, pts_b)]
-            # Pass one RGB tuple per line (not per vertex)
-            cols   = [tuple(c) for c in colors]
-            act    = actor.line(segs, colors=cols, linewidth=linewidth, opacity=opacity)
-            scene.add(act)
+        # All bonds as dim grey
+        if len(bonds) > 0:
+            add_bonds_uniform(np.ones(len(bonds), dtype=bool),
+                              (0.40, 0.40, 0.40), linewidth=0.7, opacity=0.35)
 
-        if mask_plain.any():
-            add_bonds_uniform(mask_plain, (0.45, 0.45, 0.45), linewidth=0.8, opacity=0.45)
+        # All non-deleted spins as tiny grey dots
+        mask_present = deleted == 0
+        if mask_present.any():
+            gpos = pos[mask_present]
+            gcol = np.tile([0.55, 0.55, 0.55, 0.7], (len(gpos), 1)).astype(np.float32)
+            scene.add(actor.markers(gpos, colors=gcol, scales=scale * 0.7,
+                                    marker='o', marker_opacity=0.7, edge_width=0.0))
 
-        if mask_same.any():
-            seg_rgb = cmap[cid_a[mask_same]].astype(np.float32)
-            add_bonds_colored(mask_same, seg_rgb, linewidth=1.6, opacity=0.85)
+        # Per-cluster boundary-spin meshes via meshlib ball pivoting
+        if len(bonds) > 0 and n_clusters > 0:
+            cid_a = cluster_ids[bonds[:, 0]]
+            cid_b = cluster_ids[bonds[:, 1]]
+            mesh_count = 0
 
-        if mask_cross.any():
-            add_bonds_uniform(mask_cross, (1.0, 1.0, 1.0), linewidth=1.2, opacity=0.7)
+            for cid in range(1, n_clusters + 1):
+                # collect the non-cluster endpoints of bonds bordering this cluster
+                mask_a = (cid_a == cid) & (cid_b == 0)
+                mask_b = (cid_b == cid) & (cid_a == 0)
+                bspin_idx = np.unique(np.concatenate([
+                    bonds[mask_a, 1],
+                    bonds[mask_b, 0],
+                ]))
+                if len(bspin_idx) < 4:
+                    continue
 
+                bpts = pos[bspin_idx].astype(np.float32)
+                cloud = mrmeshnumpy.pointCloudFromPoints(bpts)
+                mesh = mrmeshpy.triangulatePointCloud(
+                    cloud, mrmeshpy.TriangulationParameters())
 
-    # ===== SPINS ============================================================
+                verts = mrmeshnumpy.getNumpyVerts(mesh)
+                faces = mrmeshnumpy.getNumpyFaces(mesh.topology)
+                if len(verts) == 0 or len(faces) == 0:
+                    continue
 
-    # -- 1. Normal spins: near-black filled circles -------------------------
-    if mask_normal.any():
-        npos = pos[mask_normal]
-        ncol = np.tile([0.05, 0.05, 0.05, 1.0], (len(npos), 1)).astype(np.float32)
-        scene.add(actor.markers(npos, colors=ncol, scales=scale,
-                                marker='o', marker_opacity=1.0, edge_width=0.0))
+                rgb = cmap[cid]
+                vert_colors = np.tile(rgb, (len(verts), 1)).astype(np.float32)
+                surf = actor.surface(verts, faces=faces, colors=vert_colors)
+                surf.GetProperty().SetOpacity(0.65)
+                scene.add(surf)
+                mesh_count += 1
 
-    # -- 2. Deleted spins: hollow red circles --------------------------------
-    if mask_deleted.any():
-        dpos = pos[mask_deleted]
-        dcol = np.tile([1.0, 0.0, 0.0, 0.0], (len(dpos), 1)).astype(np.float32)
-        scene.add(actor.markers(dpos, colors=dcol, scales=scale * 1.2,
-                                marker='o', marker_opacity=0.0,
-                                edge_width=0.15,
-                                edge_color=(1.0, 0.0, 0.0), edge_opacity=1.0))
+            print(f"  Cluster meshes rendered: {mesh_count}")
 
-    # -- 3. Cluster spins: colored squares -----------------------------------
-    if mask_cluster.any():
-        cpos    = pos[mask_cluster]
-        cids    = cluster_ids[mask_cluster]
-        ccols   = cmap[cids]
-        ccols_a = np.concatenate([ccols,
-                                  np.ones((len(ccols), 1), dtype=np.float32)], axis=1)
-        scene.add(actor.markers(cpos, colors=ccols_a, scales=scale * 1.3,
-                                marker='s', marker_opacity=0.95,
-                                edge_width=0.08,
-                                edge_color=(1.0, 1.0, 1.0), edge_opacity=0.6))
+    else:
+        # ===== NORMAL MODE ==================================================
+
+        # ===== BONDS ========================================================
+        if len(bonds) > 0:
+            cid_a = cluster_ids[bonds[:, 0]]
+            cid_b = cluster_ids[bonds[:, 1]]
+
+            mask_same  = (cid_a != 0) & (cid_b != 0) & (cid_a == cid_b)
+            mask_cross = ((cid_a != 0) | (cid_b != 0)) & ~mask_same
+            mask_plain = ~mask_same & ~mask_cross
+
+            if mask_plain.any():
+                add_bonds_uniform(mask_plain, (0.45, 0.45, 0.45), linewidth=0.8, opacity=0.45)
+            if mask_same.any():
+                add_bonds_colored(mask_same, cmap[cid_a[mask_same]].astype(np.float32),
+                                  linewidth=1.6, opacity=0.85)
+            if mask_cross.any():
+                add_bonds_uniform(mask_cross, (0.45, 0.45, 0.45), linewidth=1.2, opacity=0.45)
+
+        # ===== SPINS ========================================================
+        if mask_normal.any():
+            npos = pos[mask_normal]
+            ncol = np.tile([0.05, 0.05, 0.05, 1.0], (len(npos), 1)).astype(np.float32)
+            scene.add(actor.markers(npos, colors=ncol, scales=scale,
+                                    marker='o', marker_opacity=1.0, edge_width=0.0))
+
+        if mask_deleted.any():
+            dpos = pos[mask_deleted]
+            dcol = np.tile([1.0, 0.0, 0.0, 0.0], (len(dpos), 1)).astype(np.float32)
+            scene.add(actor.markers(dpos, colors=dcol, scales=scale * 1.2,
+                                    marker='o', marker_opacity=0.0,
+                                    edge_width=0.15,
+                                    edge_color=(1.0, 0.0, 0.0), edge_opacity=1.0))
+
+        if mask_cluster.any():
+            cpos    = pos[mask_cluster]
+            cids    = cluster_ids[mask_cluster]
+            ccols   = cmap[cids]
+            ccols_a = np.concatenate([ccols,
+                                      np.ones((len(ccols), 1), dtype=np.float32)], axis=1)
+            scene.add(actor.markers(cpos, colors=ccols_a, scales=scale * 1.3,
+                                    marker='s', marker_opacity=0.95,
+                                    edge_width=0.08,
+                                    edge_color=(1.0, 1.0, 1.0), edge_opacity=0.6))
 
     # ===== Camera ===========================================================
     scene.set_camera(
@@ -275,6 +333,8 @@ def main():
     )
     parser.add_argument("spins", nargs='?', help="Spins CSV file")
     parser.add_argument("bonds", nargs='?', help="Bonds CSV file")
+    parser.add_argument("--wireframe", action="store_true",
+                        help="Wireframe mode: uncoloured lattice + convex-hull cluster meshes")
 #    parser.add_argument("min_cluster_size", type=int, default=None, help="clusters smaller than this are not plotted")
 #    parser.add_argument("max_cluster_size", type=int, default=None, help="clusters larger than this are not plotted")
     args = parser.parse_args()
@@ -298,7 +358,7 @@ def main():
     if len(positions) == 0:
         sys.exit("No valid spin data found.")
 
-    visualise(positions, deleted, cluster_ids, bonds)
+    visualise(positions, deleted, cluster_ids, bonds, wireframe=args.wireframe)
 
 
 if __name__ == "__main__":

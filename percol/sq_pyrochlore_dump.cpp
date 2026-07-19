@@ -5,6 +5,7 @@
 #include "geometry.hpp"
 #include "energy_manager.hpp"
 #include <argparse/argparse.hpp>
+#include <unordered_map>
 #include <unordered_set>
 #include <hdf5.h>
 
@@ -13,6 +14,47 @@
 #include "sim_bits.hpp"
 
 using namespace std;
+
+
+// BFS winding-number check: returns true if any cluster in `clusters` wraps
+// around the periodic boundary (i.e., the same spin is reachable via two paths
+// with different net displacements, signalling a percolating cluster).
+template<typename ClusterT>
+requires std::derived_from<ClusterT, QClusterBase>
+static bool any_cluster_percolates(const std::vector<ClusterT>& clusters,
+                                   const QClattice& sc) {
+    for (const auto& cluster : clusters) {
+        if (cluster.spins.size() < 2) continue;
+
+        std::unordered_map<const Spin*, ipos_t> visited;
+        std::queue<std::pair<const Spin*, ipos_t>> bfsq;
+
+        const Spin* s0 = cluster.spins[0];
+        visited.emplace(s0, ipos_t{0, 0, 0});
+        bfsq.push({s0, {0, 0, 0}});
+
+        while (!bfsq.empty()) {
+            auto [spin, disp] = bfsq.front();
+            bfsq.pop();
+
+            for (Spin* nb : spin->neighbours) {
+                if (nb->owning_cluster != spin->owning_cluster) continue;
+
+                ipos_t delta = nb->ipos - spin->ipos;
+                sc.lattice.wrap_super_delta(delta);
+                ipos_t nb_disp = disp + delta;
+
+                auto [it, inserted] = visited.emplace(nb, nb_disp);
+                if (!inserted) {
+                    if (it->second != nb_disp) return true; // winding path
+                } else {
+                    bfsq.push({nb, nb_disp});
+                }
+            }
+        }
+    }
+    return false;
+}
 
 
 // Semi-quantum classical MC for disorderd pyrochlores.
@@ -101,6 +143,7 @@ int main (int argc, char *argv[]) {
 
     std::map<size_t, size_t>    cluster_hist;    // Σ_n x_n[s]
     std::map<size_t, uint64_t>  cluster_hist_sq; // Σ_n x_n[s]^2
+    std::vector<int>            q_percol_results; // 1 = percolates, 0 = does not
 
     auto cdef = ap.get<std::string>("--cluster_def");
 
@@ -112,11 +155,13 @@ int main (int argc, char *argv[]) {
         // Identify the quantum-cluster distribution
 
         std::map<size_t, size_t> sweep_hist;
+        bool perc = false;
 
         if (cdef == "nn2_mf"){
             std::vector<QClusterMF> clusters;
             identify_1o_clusters(seed_tetras, clusters);
             for (const auto& Q : clusters) sweep_hist[ Q.spins.size() ]++;
+            perc = any_cluster_percolates(clusters, sc);
         } else {
             std::vector<QCluster> clusters;
             if (cdef == "nn2"){
@@ -125,12 +170,14 @@ int main (int argc, char *argv[]) {
                 identify_quantum_clusters<QuantumRule::eq24nn>(seed_tetras, clusters);
             }
             for (const auto& Q : clusters) sweep_hist[ Q.spins.size() ]++;
+            perc = any_cluster_percolates(clusters, sc);
         }
 
         for (auto& [sz, cnt] : sweep_hist) {
             cluster_hist[sz]    += cnt;
             cluster_hist_sq[sz] += static_cast<uint64_t>(cnt) * cnt;
         }
+        q_percol_results.push_back(perc ? 1 : 0);
     }
 
 
@@ -200,6 +247,17 @@ int main (int argc, char *argv[]) {
         };
         write_scalar("nsweep", nsweep_i);
         write_scalar("N",      N);
+
+        const int64_t n_q_percol = std::accumulate(
+            q_percol_results.begin(), q_percol_results.end(), int64_t{0});
+        write_scalar("n_q_percol", n_q_percol);
+
+        const double q_percol_prob = static_cast<double>(n_q_percol) / nsweep;
+        hid_t ds_prob = H5Dcreate2(file_id, "q_percol_prob", H5T_NATIVE_DOUBLE, space,
+                                   H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT);
+        H5Dwrite(ds_prob, H5T_NATIVE_DOUBLE, H5S_ALL, H5S_ALL, H5P_DEFAULT, &q_percol_prob);
+        H5Dclose(ds_prob);
+
         H5Sclose(space);
     }
 
@@ -209,6 +267,13 @@ int main (int argc, char *argv[]) {
     for (auto& [sz, cnt] : cluster_hist) n_quantum += cnt * sz;
     const size_t denom = static_cast<size_t>(N) * nsweep;
     std::cout << 100.0 * n_quantum / denom << "% of spins are in clusters\n";
+
+    const int64_t n_q_percol_out = std::accumulate(
+        q_percol_results.begin(), q_percol_results.end(), int64_t{0});
+    const double q_percol_prob_out = static_cast<double>(n_q_percol_out) / nsweep;
+    std::cout << "Quantum cluster percolation probability: "
+              << q_percol_prob_out << " (" << n_q_percol_out << "/" << nsweep << ")\n";
+
     std::cout << "Saved hist to " << hist_fname.string() << std::endl;
 
 

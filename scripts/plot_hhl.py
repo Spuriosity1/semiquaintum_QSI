@@ -23,6 +23,7 @@ import numpy as np
 import h5py
 import matplotlib.pyplot as plt
 import matplotlib.colors as mcolors
+from mpl_toolkits.axes_grid1.inset_locator import inset_axes
 
 
 plt.rcParams.update({"text.usetex": True, "font.family": "serif"})
@@ -82,6 +83,8 @@ def read_ssf(filename):
         else:
             raw  = grp["corr"][:]                    # (n_T, n_sl, n_sl, n_k, 2)
             corr = raw[..., 0] + 1j * raw[..., 1]   # (n_T, n_sl, n_sl, n_k)
+            # corr is stored as a sum over MC samples; normalise to per-sample mean
+            corr /= n_samples[:, None, None, None]
 
         if n_spins == 0:
             n_spins = int(sl_pos.shape[0])           # fallback: sublattice count
@@ -236,7 +239,7 @@ def make_edges(axis):
     return np.append(axis - d / 2, axis[-1] + d / 2)
 
 
-def plot_panel(ax, S2d, h_vals, l_vals, T, dataset, log_scale, clim, label=None):
+def plot_panel(ax, S2d, h_vals, l_vals, T, dataset, log_scale, clim, label=None, cax=None):
     if clim is not None:
         vmin, vmax = clim
     else:
@@ -250,19 +253,40 @@ def plot_panel(ax, S2d, h_vals, l_vals, T, dataset, log_scale, clim, label=None)
     else:
         norm = mcolors.Normalize(vmin=vmin, vmax=vmax)
 
+    # Wrap: repeat left column (h_min) at right and bottom row (l_min) at top
+    # so the plot looks periodic at its boundaries.
+    dh = h_vals[1] - h_vals[0]
+    dl = l_vals[1] - l_vals[0]
+    h_ext = np.append(h_vals, h_vals[-1] + dh)
+    l_ext = np.append(l_vals, l_vals[-1] + dl)
+    S2d_w = np.concatenate([S2d,      S2d[:1, :]  ], axis=0)  # left col at right
+    S2d_w = np.concatenate([S2d_w,    S2d_w[:, :1]], axis=1)  # bottom row at top
+
     mesh = ax.pcolormesh(
-        make_edges(h_vals), make_edges(l_vals), S2d.T,
+        make_edges(h_ext), make_edges(l_ext), S2d_w.T,
         norm=norm, cmap="inferno", shading="auto",
+        rasterized=True
     )
     cb_label = {
-        "Szz": r"$S^{zz}$ / site",
-        "Sqq": r"$S_\perp$ / site",
-        "Spm": r"$\langle S^{+}S^{-}\rangle$ / site",
+        "Szz": r"$\langle S^{z}S^{z} \rangle$ ",
+        "Sqq": r"$S_\perp$",
+        "Spm": r"$\langle S^{+}S^{-}\rangle$ ",
     }.get(dataset, f"{dataset} / site")
-    plt.colorbar(mesh, ax=ax, label=cb_label)
 
-    ax.set_xlabel(r"$(h,h,0)$  (r.l.u.)")
-    ax.set_ylabel(r"$(0,0,l)$  (r.l.u.)")
+    if cax is not None:
+        cb = plt.colorbar(mesh, cax=cax, orientation="horizontal")
+        cb.set_label(cb_label, fontsize=6, labelpad=1)
+        cax.tick_params(labelsize=5, pad=1)
+        cax.xaxis.set_ticks_position("bottom")
+
+    ax.tick_params(which="both", direction="out", top=True, right=True, color='k')
+    l = [-2,-1,0,1,2]
+    ax.set_xticks(l, labels=[rf'$\overline{-x}$' if x<0 else f'${x}$' for x in l])
+    ax.set_yticks(l, labels=[rf'$\overline{-x}$' if x<0 else f'${x}$' for x in l])
+
+    ax.set_xlabel(r"$(h,h,*)$  (r.l.u.)")
+    ax.set_ylabel(r"$(*,*,l)$  (r.l.u.)")
+
 
     if label is None:
         label = {"Szz": r"$S^{zz}$", "Sqq": r"$S_\perp$", "Spm": r"$S^{+-}$"}.get(dataset, dataset)
@@ -271,6 +295,8 @@ def plot_panel(ax, S2d, h_vals, l_vals, T, dataset, log_scale, clim, label=None)
     print("Using label: ",label)
     ax.set_title(label)
     ax.set_aspect("equal")
+
+    return mesh
 
 
 def main():

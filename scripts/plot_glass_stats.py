@@ -27,6 +27,7 @@ def parse_args():
     p = argparse.ArgumentParser(
         description="Plot glass diagnostics from glass_stats output"
     )
+    p.add_argument('--use_weighted', action="store_true")
     p.add_argument("filename", help="HDF5 output file from glass_stats")
     p.add_argument("--title", help="Plot title (default: filename)")
     p.add_argument("--save", metavar="FILE", help="Save figure to FILE")
@@ -37,24 +38,25 @@ def parse_args():
 # I/O
 # ----------------------------------------------------------------------------
 
-def read_glass_stats(filename):
+def read_glass_stats(filename, frust='frust'):
     with h5py.File(filename, "r") as f:
-        jpm_list = f["jpm"][:]
+        jpm_list = np.array(f["jpm"][:])
         L        = int(f["L"][()])
         nsweep = int(f["nsweep"][()])
 
         frust_cycle = {
-                3: f["frust_3_cycle"][:],
-                4: f["frust_4_cycle"][:]
+                3: np.array(f[f"{frust}_3_cycle"][:]),
+                4: np.array(f[f"{frust}_4_cycle"][:])
                 }
 
         # characterises convergence in L, not really that physically interesting
         frust_cycle_stdev = {
-                3: f["frust_3_cycle_stdev"][:],
-                4: f["frust_4_cycle_stdev"][:]
+                3: np.array(f[f"{frust}_3_cycle_stdev"][:]),
+                4: np.array(f[f"{frust}_4_cycle_stdev"][:])
                 }
+
         
-        J_mean = f["J_mean"][:]
+        J_mean = np.array(f["J_mean"][:])
         J_stdev = np.sqrt(f["J_variance"][:])
 
     return jpm_list, L, nsweep, (J_mean, J_stdev), (frust_cycle, frust_cycle_stdev)
@@ -67,15 +69,21 @@ def main():
 
     fig, (ax1, ax2) = plt.subplots(nrows=2, figsize=(4, 3.5), sharex=True)
 
-    jpm_list, L, nsweep, J_stats, cycle_stats = read_glass_stats(args.filename)
+    dset = 'wfrust' if args.use_weighted else 'frust'
+
+    jpm_list, L, nsweep, J_stats, cycle_stats = read_glass_stats(args.filename, dset)
 
     J, J_stdev = J_stats
     cyc, cyc_stdev = cycle_stats
-    ax1.plot(jpm_list, J, '-', color='k', label=r"$\langle \mathcal{J}_{ij} \rangle/J_{zz}$")
-    ax1.plot(jpm_list, J_stdev, 'k:', label=r"$\sigma_{\mathcal{J}_{ij}}/J_{zz}$")
+    pos = jpm_list>0
+    neg = jpm_list>0
+
+    ax1.plot(jpm_list[pos], J[pos], '-', color='k', label=r"$\langle \mathcal{J}_{ij} \rangle/J_{zz}$")
+    ax1.plot(jpm_list[pos], J_stdev[pos], ':', color='k', label=r"$\sigma_{\mathcal{J}_{ij}}/J_{zz}$")
+    ax1.set_yscale('log')
 
     for c in [3, 4]:
-        ax2.errorbar(jpm_list, cyc[c], yerr=cyc_stdev[c], label=f"{c}-cycle frust.")
+        ax2.errorbar(jpm_list[pos], cyc[c][pos], yerr=cyc_stdev[c][pos], label=f"{c}-cycle frust.")
 
 
 
@@ -83,6 +91,7 @@ def main():
     ax1.set_title(title)
 
     ax2.set_xlabel(r"$J_\pm/J_{zz}$")
+    ax2.set_ylabel(r"$P$(frustrated)")
 
     ax1.legend()
     ax2.legend()

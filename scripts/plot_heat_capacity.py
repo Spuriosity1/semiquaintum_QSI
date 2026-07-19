@@ -163,7 +163,7 @@ def plot_file(fname, axes_map, color, label, save_directory=None):
 
     if 'C' in axes_map:
         ax = axes_map['C']
-        ax.plot(T, C, marker="o", markersize=3, color=color, label=label)
+        ax.plot(T, C, marker=None, markersize=3, color=color, label=label)
         if se_C is not None:
             ax.fill_between(T, C - se_C, C + se_C, alpha=0.2, color=color)
 
@@ -248,7 +248,7 @@ def main(args):
     if 'C' in axes_map:
         ax = axes_map['C']
         ax.set_ylabel("Specific heat $C/N$")
-        ax.set_xlabel("Temperature $T$")
+        ax.set_xlabel("Temperature $T/J_{zz}$")
         ax.set_xscale("log")
         if args.y_logscale:
             ax.set_yscale("log")
@@ -261,7 +261,7 @@ def main(args):
     if 'E' in axes_map:
         ax = axes_map['E']
         ax.set_ylabel(r"Mean energy $\langle E \rangle / N$")
-        ax.set_xlabel("Temperature $T$")
+        ax.set_xlabel("Temperature $T/J_{zz}$")
         ax.set_xscale("log")
         ax.grid(True)
         ax.legend(fontsize=7)
@@ -272,7 +272,7 @@ def main(args):
     if 'S' in axes_map:
         ax = axes_map['S']
         ax.set_ylabel(r"Entropy $S/N$ (integrated from $T_\mathrm{min}$)")
-        ax.set_xlabel("Temperature $T$")
+        ax.set_xlabel("Temperature $T/J_{zz}$")
         ax.set_xscale("log")
         ax.grid(True)
         ax.legend(fontsize=7)

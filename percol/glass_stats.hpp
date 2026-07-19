@@ -82,10 +82,16 @@ inline double Jfunc(double Jpm, int diamond_dist){
 
 struct FrustrationStats {
     int    cycle_length;
-    size_t n_total;
-    size_t n_frustrated;
+    size_t n_total      = 0;
+    size_t n_frustrated = 0;
+    double weight_total      = 0.0; // sum of sum_i|J_i| over all cycles
+    double weight_frustrated = 0.0; // same, restricted to frustrated cycles
     double frust_fraction() const {
         return n_total ? double(n_frustrated) / double(n_total) : 0.0;
+    }
+    // Importance-sampled frustration: cycles weighted by sum_i|J_i|
+    double weighted_frust_fraction() const {
+        return weight_total > 0.0 ? weight_frustrated / weight_total : 0.0;
     }
 };
 
@@ -232,12 +238,20 @@ public:
             auto& s = stats[idx];
             ++s.n_total;
             double J_prod = 1.0;
+            double weight = std::numeric_limits<double>::max();
             for (auto& b : cyc.bonds) {
                 auto it = bond_counts_.find({b.lo, b.hi});
-                if (it != bond_counts_.end())
-                    J_prod *= -J_from_counts(it->second, Jpm);
+                if (it != bond_counts_.end()) {
+                    double J = J_from_counts(it->second, Jpm);
+                    J_prod *= -J;
+                    weight = std::min(weight, std::abs(J));
+                }
             }
-            if (J_prod < 0.0) ++s.n_frustrated;
+            s.weight_total += weight;
+            if (J_prod < 0.0) {
+                ++s.n_frustrated;
+                s.weight_frustrated += weight;
+            }
         }
         return stats;
     }
