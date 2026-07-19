@@ -115,6 +115,9 @@ def cv_theory(T_list: np.ndarray, cluster_dist: dict, p: float, Jpm: float,
         # This is the situation of first order clusters 
         # subject to ice constraints
         n_dimers = cluster_dist.get(2, 0.0)
+        if n_dimers == 0:
+            print("Error: n_dimers = 0")
+
         beta = 1.0 / T_list
         x = Jpm * beta
         cv_dimer = x**2 * np.exp(-x) / (1.0 + np.exp(-x))**2
