@@ -1,0 +1,5 @@
+../out/percol_CMC/hist_L12_p0.010_s108_w500_nn24.csv
+../out/percol_CMC/hist_L12_p0.020_s108_w500_nn24.csv
+../out/percol_CMC/hist_L12_p0.030_s108_w500_nn24.csv
+../out/percol_CMC/hist_L12_p0.040_s108_w500_nn24.csv
+../out/percol_CMC/hist_L12_p0.050_s108_w500_nn24.csv
