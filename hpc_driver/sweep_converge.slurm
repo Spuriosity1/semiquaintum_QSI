@@ -52,7 +52,7 @@ echo "Current directory: `pwd`"
 L=8
 DILUTION=0.05
 Jzz=1.0
-N_DISORDER_REALISATIONS=8
+N_DISORDER_REALISATIONS=64
 moves="CQBRW"
 sweep=128
 n_replicas=20
