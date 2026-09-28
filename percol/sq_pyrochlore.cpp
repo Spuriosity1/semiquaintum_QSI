@@ -204,7 +204,7 @@ int main (int argc, char *argv[]) {
 
     double Thot = ap.get<double>("--Thot");
     double Tcold = ap.get<double>("--Tcold");
-    size_t n_step = ap.get<size_t>("--nstep");
+    size_t nstep = ap.get<size_t>("--nstep");
 
     ModelParams::get().Jzz = ap.get<double>("--Jzz");
     ModelParams::get().Jxx = ap.get<double>("--Jxx");
@@ -236,24 +236,53 @@ int main (int argc, char *argv[]) {
     std::mt19937 rng(hashf(dseed));
     params.rng.seed(hashf(mseed ^ (dseed * 105 ) ) );
     std::unordered_set<Tetra*> seed_tetras;
-    // Identify the quantum-cluster distribution
-    MCStateMF state;
 
     delete_spins(rng, sc, p, seed_tetras);
+
+
+    // Identify the quantum-cluster distribution
+    MCStateMF state;
     if (!classical_only)
         identify_1o_clusters(seed_tetras, state.clusters);
     identify_flippable_hexas(sc, state.intact_plaqs);
 
+    if (verbosity >= 1) {
+        output_cluster_dist(std::cout, state.clusters, 1);
+    }
+
+    ModelParams::get().verbosity = verbosity;
     for (auto& qc : state.clusters) qc.initialise();
+
+    if (verbosity >= 3){
+        long long bytes_H = 0;
+        long long bytes_cache = 0;
+        for (const auto& qc : state.clusters){
+            const int D = qc.hilbert_dim();
+            const int k = (int)qc.classical_boundary_spins.size();
+            const int N = qc.n_spins();
+            bytes_H += D*D*8;
+
+            if (k <= qc.MAX_CACHED_BOUNDARY) {
+                const int n_cfg = 1 << k;
+                const long long evec_elems = (long long)D * D * n_cfg;
+                bytes_cache += (long long)n_cfg * D * 8;         // eval_cache
+                bytes_cache += (long long)n_cfg * D * N * 8;     // sz_cache
+                if (evec_elems <= qc.MAX_EVEC_CACHED_ELEMENTS)
+                    bytes_cache += evec_elems * 8;               // evec_cache
+            }
+        }
+        std::cout<<"\n================\n"<<
+                  "Cluster Hamiltonians mem="<< bytes_H / (1024.0 * 1024.0) << " MB\n" <<
+                  "Cluster Caches mem="<< bytes_cache / (1024.0 * 1024.0) << " MB\n";
+    }
 
     // Partitions spins into boundary, cluster and neighbour
     state.partition_spins(sc.get_objects<Spin>());
 
     if (verbosity >= 1) {
-        output_cluster_dist(std::cout, state.clusters, 1);
-
         int exp_Jzz_bonds = calc_GS_energy(sc.get_objects<Tetra>());
-        std::cout << "Expected ground state energy: " << exp_Jzz_bonds << "Jzz = "
+        std::cout << "\n==========================\n"
+                  << "Expected ground state energy: " << exp_Jzz_bonds << "Jzz = "
                   << exp_Jzz_bonds * ModelParams::get().Jzz << "\n";
 
         std::cout << "\n==========================\n"
@@ -296,10 +325,10 @@ int main (int argc, char *argv[]) {
         energy_manager em;
         Q_manager mm;
         ssf_manager ssf(sc, pyrochlore::pyrochlore_local_axes());
-        transverse_corr_manager tcm(state, sc, n_step);
-        double factor = exp( log(Tcold/Thot) / n_step );
+        transverse_corr_manager tcm(state, sc, nstep);
+        double factor = exp( log(Tcold/Thot) / nstep );
 
-        for (size_t i=0; i<n_step; i++){
+        for (size_t step_i=1; step_i<=nstep; step_i++){
             params.beta /= factor;
             const double T = 1./params.beta;
             em.new_T(T);
@@ -307,15 +336,15 @@ int main (int argc, char *argv[]) {
 
             for (size_t n=0; n<nburn; n++) do_sweep();
 
-            for (size_t n=1; n<=nsamp; n++){
+            for (size_t n=0; n<nsamp; n++){
                 for (size_t m=0; m<nsweep; m++) do_sweep();
 
                 em.sample(state.energy());
                 mm.sample(sc);
                 // sample only coldest temperature for SSF
-                if (n == nsamp){
-                    ssf.new_T(T);
-                    tcm.new_T(T);
+                if (step_i == nstep){
+                    ssf.set_T(T);
+                    tcm.set_T(T);
                 
                     if (!ap.get<bool>("--ignore_ssf")) ssf.sample();
                     if (!ap.get<bool>("--ignore_tcm")) tcm.sample(params.beta);
@@ -328,7 +357,7 @@ int main (int argc, char *argv[]) {
                 if (!state.clusters.empty())        params.accepted_quantum    /= state.clusters.size();
                 if (!state.boundary_spins.empty())  params.accepted_boundary   /= state.boundary_spins.size();
 
-                std::cout << "Step "<<i+1<<std::setprecision(6) << " T = " << T
+                std::cout << "Step "<<step_i+1<<std::setprecision(6) << " T = " << T
                           << "\tE = " << em.curr_E()
                           << "\t" << params.acceptance() <<"\n";
             }
@@ -383,8 +412,8 @@ int main (int argc, char *argv[]) {
 
         // Cooling factor — same per-step rate as the standard annealing branch.
         // After n_step/n_replicas steps each replica cools by (Tcold/Thot)^{1/n_replicas}.
-        const double factor = std::exp(std::log(Tcold / Thot) / n_step);
-        const size_t steps_per_replica = n_step / n_replicas;
+        const double factor = std::exp(std::log(Tcold / Thot) / nstep);
+        const size_t steps_per_replica = nstep / n_replicas;
 
         // Stage 1: pre-anneal from T_hot, capturing a snapshot at each replica's
         // starting temperature T_r(0) = Thot * (Tcold/Thot)^{r/n_replicas}.
@@ -450,13 +479,16 @@ int main (int argc, char *argv[]) {
                     em.set_T(1.0 / betas[r]);
                     mm.set_T(1.0 / betas[r]);
                     
-                    for (size_t n = 0; n < nsamp; n++) {
-                        for (size_t n = 0; n < nsweep; n++) do_sweep();
-                        em.sample(state.energy());
-                        mm.sample(sc);
-                        if (std::abs(betas[r] - coldest_beta) < 1e-11){
-                            if (!ap.get<bool>("--ignore_ssf")) ssf.sample();
-                            if (!ap.get<bool>("--ignore_tcm")) tcm.sample(betas[r]);
+                    // sample only the last replica swap round
+                    if (j == n_replica_swaps -1){
+                        for (size_t n = 0; n < nsamp; n++) {
+                            for (size_t n = 0; n < nsweep; n++) do_sweep();
+                            em.sample(state.energy());
+                            mm.sample(sc);
+                            if (std::abs(betas[r] - coldest_beta) < 1e-11){
+                                if (!ap.get<bool>("--ignore_ssf")) ssf.sample();
+                                if (!ap.get<bool>("--ignore_tcm")) tcm.sample(betas[r]);
+                            }
                         }
                     }
                     replicas[r] = save_state(state);

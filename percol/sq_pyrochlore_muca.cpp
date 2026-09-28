@@ -172,6 +172,7 @@ int main(int argc, char* argv[]) {
     identify_1o_clusters(seed_tetras, state.clusters);
     identify_flippable_hexas(sc, state.intact_plaqs);
 
+    ModelParams::get().verbosity = verbosity;
     for (auto& qc : state.clusters) qc.initialise();
     state.partition_spins(sc.get_objects<Spin>());
 

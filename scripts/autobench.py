@@ -15,7 +15,7 @@ import subprocess
 import time
 import math
 
-SWEEP_RE = re.compile(r'\{(\w+)=([^}]+)\}')
+SWEEP_RE = re.compile(r'\{([\w\^]+)=([^}]+)\}')
 
 
 def parse_range(spec: str) -> list:
@@ -41,7 +41,7 @@ def substitute(template: str, mapping: dict) -> str:
     return SWEEP_RE.sub(lambda m: str(mapping[m.group(1)]), template)
 
 
-def fit_model_1d(name: str, xs: list, ts: list):
+def fit_model_1d(name: str, xs: list, ts: list, exponent=None):
     """Fit T = A + B·x^p via scipy.curve_fit. Returns (A, B, p, r2) or None."""
     try:
         import numpy as np
@@ -60,21 +60,38 @@ def fit_model_1d(name: str, xs: list, ts: list):
     def model(x, A, B, p):
         return A + B * x**p
 
+    def model_set_p(x, A, B):
+        return A + B * x**exponent
+
     # A is bounded above by min(T) so the power-law term stays non-negative.
     try:
-        popt, pcov = curve_fit(
-            model, xf, tf,
-            p0=[tf.min() * 0.1, tf.mean(), 1.0],
-            bounds=([-np.inf, 0, -20], [float(tf.min()), np.inf, 20]),
-            maxfev=20000,
-        )
+        if exponent is None:
+            popt, pcov = curve_fit(
+                model, xf, tf,
+                p0=[tf.min() * 0.1, tf.mean(), 1.0],
+                bounds=([-np.inf, 0, -20], [float(tf.min()), np.inf, 20]),
+                maxfev=20000,
+            )
+
+            A, B, p = popt
+
+        else:
+            popt, pcov = curve_fit(
+                model_set_p, xf, tf,
+                p0=[tf.min() * 0.1, tf.mean()],
+                bounds=([-np.inf, 0], [float(tf.min()), np.inf]),
+                maxfev=20000,
+            )
+            A, B = popt
+            p = exponent
     except Exception as e:
         print(f"  Warning: curve_fit failed ({e})")
         return None
 
-    A, B, p = popt
-    perr = np.sqrt(np.diag(pcov))
+
+    perr = np.append(np.sqrt(np.diag(pcov)),[0])
     pred = model(xf, A, B, p)
+
     ss_res = np.sum((tf - pred) ** 2)
     ss_tot = np.sum((tf - tf.mean()) ** 2)
     r2 = 1.0 - ss_res / ss_tot if ss_tot > 0 else float('nan')
@@ -167,7 +184,14 @@ def main():
 
         xs = [v for v, _ in sweep_results[sweep_var]]
         ts = [t for _, t in sweep_results[sweep_var]]
-        result = fit_model_1d(sweep_var, xs, ts)
+
+        p = None
+        print(sweep_var)
+        if '^' in sweep_var:
+            p = float(sweep_var.split('^')[1])
+            print(f"Using fixed p={p}")
+        result = fit_model_1d(sweep_var, xs, ts, exponent=p)
+
         if result is not None:
             sweep_fits[sweep_var] = result
         print()

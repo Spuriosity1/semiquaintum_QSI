@@ -14,7 +14,7 @@
 #SBATCH --output=hpc_driver/track/c_sweep.%A_%a.out
 #SBATCH --error=hpc_driver/track/c_sweep.%A_%a.error
 #SBATCH --chdir=/scratch/alaric/semiquaintum_QSI
-#SBATCH --array=0-19
+#SBATCH --array=0-24
 ##SBATCH --constraint='uarch:x86-64-v3|uarch:x86-64-v4'
 
 . /etc/profile.d/modules.sh                # Leave this line (enables the module command)
@@ -49,12 +49,11 @@ echo "Current directory: `pwd`"
 #fi
 #
 
-L=4
+L=6
 DILUTION=0.05
 Jzz=1.0
-N_DISORDER_REALISATIONS=64
+N_DISORDER_REALISATIONS=1
 moves="CQBRW"
-n_replicas=100
 
 mkdir -p $OUT_PATH
 
@@ -68,16 +67,15 @@ Jpm=0.05
 Jxx=$Jpm
 Jyy=$Jpm
 
-burnvals=(64 128 256 512)
-sweepvals=(8 16 32 64 128)
+sweepvals=(16 32 64 128 256)
 
-burn_id=$(( $SLURM_ARRAY_TASK_ID % 4 ))
-sweep_id=$(( $SLURM_ARRAY_TASK_ID / 4 ))
+samp_id=$(( $SLURM_ARRAY_TASK_ID % 5 ))
+sweep_id=$(( $SLURM_ARRAY_TASK_ID / 5 ))
 
-burn=${burnvals[${burn_id}]}
-sweep=256
-replica_swaps=${sweepvals[${sweep_id}]}
+burn=128
+sweep=${sweepvals[${sweep_id}]}
+samp=${sweepvals[${samp_id}]}
 
-CMD="$EXE_DIR/sq_pyrochlore $L $DILUTION -o $OUT_PATH --Thot 100 --Tcold 0.01 --Jzz $Jzz --Jxx $Jxx --Jyy $Jyy --nsweep $sweep --nburn ${burn} -s $ds -m $ms --moves $moves --prefix bm_r${n_replicas}_rs${replica_swaps}_${moves}_sw${sweep}_burn${burn} --n_replicas ${n_replicas} --n_replica_swaps ${replica_swaps} --ignore_ssf"
+CMD="$EXE_DIR/sq_pyrochlore $L $DILUTION -o $OUT_PATH --Thot 100 --Tcold 0.001 --Jzz $Jzz --Jxx $Jxx --Jyy $Jyy --nsweep $sweep --nburn ${burn} -s $ds -m $ms --moves $moves --prefix bm_an_${moves}_sw${sweep}_samp${samp} --n_replicas 1 --nsamp ${samp} --ignore_ssf --ignore_tcm"
 echo "$CMD"
 $CMD

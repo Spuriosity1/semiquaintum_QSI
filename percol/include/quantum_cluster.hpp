@@ -17,6 +17,7 @@ struct ModelParams {
     double Jxx = 0.5;
     double Jyy = 0.5;
 //    double h = 0;
+    int verbosity = 0;
 
     static ModelParams& get() {
         static ModelParams instance;
@@ -114,7 +115,7 @@ inline bool ends_can_fluctuate(const Spin* a, const Spin* b){
 struct QClusterBase {
     using BoundaryConfig = uint32_t; // bitmask over boundary spins; bit i set ↔ classical_boundary_spins[i] == +1
 
-    static constexpr int MAX_CACHED_BOUNDARY = 12; // cache if 2^k <= 4096 configs
+    static constexpr int MAX_CACHED_BOUNDARY = 10; // cache if 2^k <= 4096 configs
     // Cache eigenvectors only if D^2 * n_configs <= this (≈8 MB per cluster).
     // For N=6/k=8: 64^2 * 256 = 1 M elements ✓.  N=8/k=4: 256^2 * 16 = 1 M ✓.
     static constexpr long long MAX_EVEC_CACHED_ELEMENTS = 1LL << 20;
@@ -187,7 +188,7 @@ struct QClusterBase {
 
     protected:
 
-    Eigen::MatrixXd ham_with_classical_bcs(const std::vector<Spin*>& classical_spins, uint32_t classical_config);
+    Eigen::MatrixXd ham_with_classical_bcs(const std::vector<Spin*>& classical_spins, uint32_t classical_config) const;
 };
 
 // Exact cluster: clusters are independent.  Inter-cluster quantum bonds
@@ -215,6 +216,21 @@ struct QClusterMF : public QClusterBase {
 
     void initialise() override;
     void diagonalise(BoundaryConfig config) override;
+
+    // Read eigenvalues and Sz_expect for a given boundary config without modifying
+    // cluster state.  Used by try_flip_boundary_spin_MF_exact to avoid a full cluster
+    // copy.  Uses the precomputed cache if available; otherwise diagonalises locally.
+    void diagonalise_speculative(BoundaryConfig config,
+                                  Eigen::VectorXd& out_evals,
+                                  Eigen::MatrixXd& out_Sz) const;
+
+    // Install precomputed spectrum (from diagonalise_speculative) on accept.
+    void install(BoundaryConfig config, Eigen::VectorXd evals, Eigen::MatrixXd Sz) {
+        boundary_config = config;
+        eigenvalues     = std::move(evals);
+        Sz_expect       = std::move(Sz);
+    }
+
     void sync(){
         this->boundary_config=0;
         for (int i=0; i<(int)classical_boundary_spins.size(); i++){

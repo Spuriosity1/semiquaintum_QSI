@@ -27,6 +27,7 @@ enum MoveFlags : uint32_t {
     MOVE_MONOPOLE  = 1u << 3,  // M: monopole worm
     MOVE_BOUNDARY  = 1u << 4,  // B: boundary-spin flip
     MOVE_QUANTUM   = 1u << 5,  // Q: cluster eigenstate resample
+    MOVE_BSTRING   = 1u << 6,  // S: boundary-to-boundary string worm
     MOVE_ALL       = ~0u,
     MOVE_HIGH_T    = MOVE_CLASSICAL | MOVE_QUANTUM | MOVE_BOUNDARY
 };
@@ -41,8 +42,9 @@ inline MoveFlags parse_moves(const std::string& s) {
             case 'M': case 'm': f |= MOVE_MONOPOLE;  break;
             case 'B': case 'b': f |= MOVE_BOUNDARY;  break;
             case 'Q': case 'q': f |= MOVE_QUANTUM;   break;
+            case 'S': case 's': f |= MOVE_BSTRING;   break;
             default: throw std::invalid_argument(
-                std::string("Unknown move letter '") + c + "' (valid: RCWMBQ)");
+                std::string("Unknown move letter '") + c + "' (valid: RCWMBQS)");
         }
     }
     return static_cast<MoveFlags>(f);
@@ -83,8 +85,10 @@ struct MCSettings {
     double accepted_plaq=0;
     double accepted_worm=0;
     double accepted_monopole=0;
+    double accepted_bstring=0;
 
     size_t attempted_monopole=0;
+    size_t attempted_bstring=0;
     size_t sweeps_attempted=0;
 
     void reset_acceptance(){
@@ -93,7 +97,9 @@ struct MCSettings {
         accepted_quantum=0;
         accepted_worm=0;
         accepted_monopole=0;
+        accepted_bstring=0;
         attempted_monopole=0;
+        attempted_bstring=0;
         sweeps_attempted=0;
     }
 
@@ -103,6 +109,9 @@ struct MCSettings {
          << "Acc W="<< 100.0 * accepted_worm/sweeps_attempted<<"%\t"
          << "Acc M="<< (attempted_monopole > 0
                         ? std::to_string(100.0 * accepted_monopole/attempted_monopole) + "%"
+                        : std::string("n/a"))<<"\t"
+         << "Acc S="<< (attempted_bstring > 0
+                        ? std::to_string(100.0 * accepted_bstring/attempted_bstring) + "%"
                         : std::string("n/a"))<<"\t"
          << "Acc C="<< 100.0 * accepted_classical/sweeps_attempted<<"%\t"
          << "Acc B="<< 100.0 * accepted_boundary/sweeps_attempted<<"%\t"
@@ -138,6 +147,7 @@ std::vector<Tetra*> find_monopole_tetras(const std::vector<Tetra*>& intact_tetra
 int try_flip_boundary_spin_MF_exact(MCSettings& mc, Spin* s);
 int try_flip_worm(MCSettings& mc, Spin* root);
 int try_flip_monopole_worm(MCSettings& mc, Tetra*tail_tetra, double target_length_mean=10);
+int try_flip_boundary_string(MCSettings& mc, Spin* s_start);
 
 struct MCStateMF {
     std::vector<Plaq*>    intact_plaqs;

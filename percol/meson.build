@@ -16,15 +16,26 @@ percol_lib = static_library('percol_lib',
   )
 
 pyro_dilution_bin = executable('pyro_dilution', 'pyro_dilution.cpp',
-  include_directories:percol_inc,
+  include_directories: percol_inc,
   dependencies: main_deps
   )
 
 sq_pyrochlore_bin = executable('sq_pyrochlore', 'sq_pyrochlore.cpp',
-  include_directories:percol_inc,
+  include_directories: percol_inc,
   link_with: [percol_lib],
   dependencies: [main_deps, eigen_dep, fftw_dep, hdf5_dep]
  )
+
+
+glass_stats_bin = executable('glass_stats', 'glass_stats.cpp',
+  include_directories: percol_inc,
+  dependencies: [main_deps, eigen_dep, fftw_dep, hdf5_dep]
+)
+
+#glass_sim_bin = executable('glass_sim', 'glass_sim.cpp',
+#  include_directories: percol_inc,
+#  dependencies: [main_deps, eigen_dep, fftw_dep, hdf5_dep]
+#)
 
 #sq_pyrochlore_exact_bin = executable('sq_pyrochlore_exact', 'sq_pyrochlore_exact.cpp',
 #  include_directories:percol_inc,

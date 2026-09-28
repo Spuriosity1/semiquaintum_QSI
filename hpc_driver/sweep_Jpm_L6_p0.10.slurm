@@ -1,18 +1,18 @@
 #!/bin/bash
 
-#SBATCH -J mc_sweep
+#SBATCH -J L6_j0p10
 #SBATCH --nodes=1
 #! number of MPI tasks
 #SBATCH --ntasks=1
 #SBATCH --mail-user=alaric@zedat.fu-berlin.de   # Email to which notifications will be sent 
 #! How much wallclock time will be required?
-#SBATCH --time=3:00:00
+#SBATCH --time=18:00:00
 #SBATCH --cpus-per-task=1
 #SBATCH --mem-per-cpu=2000
 #! What types of email messages do you wish to receive?
 #SBATCH --mail-type=END
-#SBATCH --output=hpc_driver/track/c_sweep.%A_%a.out
-#SBATCH --error=hpc_driver/track/c_sweep.%A_%a.error
+#SBATCH --output=hpc_driver/track/%x.%A_%a.out
+#SBATCH --error=hpc_driver/track/%x.%A_%a.error
 #SBATCH --chdir=/scratch/alaric/semiquaintum_QSI
 #SBATCH --array=0-1024
 ##SBATCH --constraint='uarch:x86-64-v3|uarch:x86-64-v4'
@@ -49,26 +49,29 @@ echo "Current directory: `pwd`"
 #fi
 #
 
-L=4
+L=6
 DILUTION=0.10
 Jzz=1.0
 N_DISORDER_REALISATIONS=8
-moves="CQBRW
+moves="CQBRW"
+sweep=256
+samp=128
 
 mkdir -p $OUT_PATH
 
 # disorder realisation number
-ds=$(( $SLURM_ARRAY_TASK_ID % $N_DISORDER_REALISATIONS + 100 ))
+ds=$(( $SLURM_ARRAY_TASK_ID % $N_DISORDER_REALISATIONS + 200 ))
 # Monte Carlo seed
-ms=$(( $SLURM_ARRAY_TASK_ID / $N_DISORDER_REALISATIONS ))
+ms=$(( $SLURM_ARRAY_TASK_ID / $N_DISORDER_REALISATIONS + 3000 ))
 
-for Jpm in -0.050 0.000 0.050; do
+for Jpm in -0.050 0.000 0.050 0.100 0.200; do
 
 Jxx=$Jpm
 Jyy=$Jpm
 
-CMD="$EXE_DIR/sq_pyrochlore $L $DILUTION -o $OUT_PATH --Thot 100 --Tcold 0.01 --Jzz $Jzz --Jxx $Jxx --Jyy $Jyy --nsweep 256 --nburn 16 -s $ds -m $ms --moves $moves --prefix run_$moves"
+CMD="$EXE_DIR/sq_pyrochlore $L $DILUTION -o $OUT_PATH --Thot 100 --Tcold 0.01 --Jzz $Jzz --Jxx $Jxx --Jyy $Jyy --nsweep $sweep --nburn ${burn} -s $ds -m $ms --moves $moves --prefix bm_an_${moves}_sw${sweep}_samp${samp} --n_replicas 1 --nsamp ${samp}"
 echo "$CMD"
 $CMD
+echo "done"
 
 done
